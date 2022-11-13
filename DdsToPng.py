@@ -1,3 +1,9 @@
+# Copyright Notice
+# - TexModTools
+# - First published 2022 - Copyright, Jakob Wapenhensch
+# - https://creativecommons.org/licenses/by-nc/4.0/
+# - https://creativecommons.org/licenses/by-nc/4.0/legalcode
+
 import os
 import cv2
 import numpy as np

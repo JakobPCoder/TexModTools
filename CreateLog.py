@@ -1,6 +1,8 @@
-# part of https://github.com/JakobPCoder/TexModTools 
-# only use according to the license
-
+# Copyright Notice
+# - TexModTools
+# - First published 2022 - Copyright, Jakob Wapenhensch
+# - https://creativecommons.org/licenses/by-nc/4.0/
+# - https://creativecommons.org/licenses/by-nc/4.0/legalcode
 
 import os
 import pathlib
