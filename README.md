@@ -1,5 +1,5 @@
 # TexModTools
-- About
+## About
 Some python scripts to help making texture mods for dx9 games with texMod and openTexMod
 
 # Copyright Notice
