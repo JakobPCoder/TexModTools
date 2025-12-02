@@ -9,7 +9,6 @@ import cv2
 import numpy as np
 import pathlib
 from wand.image import Image
-
 INPUT_FILE_FORMAT = ".dds"
 OUTPUT_FILE_FORMAT = ".png"
 

@@ -1,0 +1,6 @@
+@echo off
+echo Running TexturesToTpf.py...
+python TexturesToTpf.py
+echo.
+echo Press any key to exit...
+pause >nul
