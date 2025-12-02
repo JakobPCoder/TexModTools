@@ -107,8 +107,9 @@ Textures must follow the pattern: `*_0X[hexadecimal].png` or `*_0x[hexadecimal].
 ### Step 1: Extract Textures
 Use **OpenTexMod** to extract `.dds` texture files from your game:
 1. Launch `OpenTexMod.exe`
-2. Select your game executable
-3. Use logging mode to dump textures
+2. Select Main -> Use Global hook
+3. Start your game
+4. Use the hotkeys from OpenTexMod to dump textures
 4. Textures are saved as `.dds` files
 
 ### Step 2: Convert to PNG
@@ -133,9 +134,17 @@ If you need to edit alpha channels separately:
 
 ### Step 6: Use Your Mod
 1. Launch **OpenTexMod.exe**
-2. Select your game executable
-3. Load the `.tpf` file you created
-4. Run the game and enjoy your texture mod!
+2. Select Main -> Use Global hook
+3. Start your game
+4. Select Open texture/package and select your `.tpf` file
+6. Select Main -> Set as Template
+7. Press Main -> Update (Reload)
+
+From now on for every game start:
+1. Start openTexMod
+2. Start your game
+That's it!
+
 
 ## Technical Details
 
