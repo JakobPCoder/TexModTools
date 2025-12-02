@@ -1,6 +1,6 @@
 # TexModTools
 
-A collection of Python scripts and tools for creating texture mods for DirectX 9 games using TexMod and OpenTexMod.
+A collection of Python scripts and tools for creating texture mods for DirectX 9 games using OpenTexMod.
 
 ## About
 
@@ -26,17 +26,16 @@ TexModTools provides a complete workflow for extracting, processing, and packagi
 Install the required Python packages using pip:
 
 ```bash
-pip install opencv-python numpy Wand zipencrypt colorama
+pip install Pillow numpy zipencrypt colorama
 ```
 
 **Package Details:**
-- `opencv-python` - Image processing and format conversion
-- `numpy` - Numerical operations for image manipulation
-- `Wand` - ImageMagick binding for DDS file support
+- `Pillow` - Image processing for alpha channel detection
+- `numpy` - Numerical operations for alpha variance calculation
 - `zipencrypt` - ZipCrypto encryption for TPF format
 - `colorama` - Colored terminal output (optional, falls back gracefully if not installed)
 
-**Note:** Wand requires ImageMagick to be installed on your system. Download it from [ImageMagick's official website](https://imagemagick.org/script/download.php).
+**Note:** For the optional DDS compression feature in `TexturesToTpf.py`, ImageMagick must be installed separately on your system (download from [ImageMagick's official website](https://imagemagick.org/script/download.php)) and the `magick` command must be in your system PATH.
 
 ## Scripts Overview
 
@@ -79,6 +78,7 @@ Automatically scans a directory for PNG texture files, extracts hexadecimal IDs 
 2. Run: `python TexturesToTpf.py` or double-click `Run_TexturesToTpf.bat`
 3. The script will:
    - Auto-detect the texture directory (or prompt for selection)
+   - **Prompt: Ask if you want to auto-compress textures to DDS format (y/n) for smaller file sizes**
    - Scan for valid texture files matching the ID pattern
    - Validate all files exist
    - Generate `texmod.def` definition file
@@ -96,11 +96,16 @@ Textures must follow the pattern: `*_0X[hexadecimal].png` or `*_0x[hexadecimal].
 
 **Features:**
 - Auto-detection of texture directories
-- Progress indicators for large texture sets
+- **Optional DDS compression: Converts PNG to DXT1 (no alpha) or DXT5 (with alpha variance) format using ImageMagick; generates mipmaps by default for better performance**
+- **Alpha channel detection: Uses variance threshold to decide compression type (avoids DXT5 for uniform alpha to save space)**
+- Progress indicators for large texture sets (>10 files)
 - Validation of texture files before packaging
 - Duplicate ID detection and warnings
 - Full TPF format compliance (XOR obfuscation + ZipCrypto encryption)
+- Detailed build summary with file size comparisons (PNG vs. DDS vs. TPF)
 - Interactive countdown before exit (press SPACE to pause, any key to exit)
+- Automatic cleanup of temporary DDS files
+- Fallback to original PNG if compression fails
 
 ## Complete Workflow
 
@@ -130,7 +135,8 @@ If you need to edit alpha channels separately:
 1. Ensure all textures follow the `*_0X[hex].png` naming pattern
 2. Place `TexturesToTpf.py` in the texture folder (or run from anywhere)
 3. Run: `python TexturesToTpf.py` or double-click `Run_TexturesToTpf.bat`
-4. The script creates a `.tpf` file ready for use
+4. **The script will prompt: Do you want to auto-compress to DDS? (y/n)**
+5. The script creates a `.tpf` file ready for use
 
 ### Step 6: Use Your Mod
 1. Launch **OpenTexMod.exe**
@@ -163,9 +169,15 @@ Texture IDs are extracted from filenames using the pattern `_0X[hex]` or `_0x[he
 ## Troubleshooting
 
 ### ImageMagick/Wand Issues
-If `1toPng.py` fails with Wand errors:
+If `TexturesToTpf.py` fails during DDS compression with 'magick' errors:
 - Ensure ImageMagick is installed and in your system PATH
-- Verify ImageMagick installation: `magick -version`
+- Verify installation: `magick -version`
+- If compression fails for specific files, the script falls back to using the original PNG (check the console output for warnings)
+
+### DDS Compression Issues
+- **Command not found:** Install ImageMagick if prompted during compression.
+- **Conversion failures:** Some PNGs may not convert due to format issues; the script skips them and uses PNG fallback. Review the build summary for failed counts.
+- **Verify compression:** Check the final summary for DXT1/DXT5 counts and size reductions. Test the TPF in OpenTexMod to ensure textures load correctly.
 
 ### Missing Textures
 If `TexturesToTpf.py` reports missing textures:

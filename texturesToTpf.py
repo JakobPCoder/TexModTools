@@ -10,8 +10,9 @@ import io
 import time
 import struct
 import shutil
+import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 
 try:
     import msvcrt
@@ -42,6 +43,22 @@ except ImportError:
     def init(**kwargs):
         pass
 
+try:
+    from PIL import Image
+except ImportError:
+    raise ImportError(
+        "Pillow package is required for alpha channel detection. "
+        "Install it with: pip install Pillow"
+    )
+
+try:
+    import numpy as np
+except ImportError:
+    raise ImportError(
+        "numpy package is required for alpha channel variance calculation. "
+        "Install it with: pip install numpy"
+    )
+
 # Constants
 INPUT_FILE_FORMAT = ".png"
 EXIT_DELAY_SECONDS = 10
@@ -56,6 +73,12 @@ ZIPCRYPTO_PASSWORD = bytes([
     0x73, 0x41, 0x77, 0x6E, 0x46, 0x47, 0x77, 0x49, 0x0C, 0x4B,
     0x46, 0x6F
 ])
+
+# DDS Compression Constants
+AUTO_COMPRESS_ENABLED = False  # Default compression setting
+GENERATE_MIPMAPS = True  # Whether to generate mipmaps
+MIPMAP_FILTER = "box"  # Mipmap generation filter (box, triangle, lanczos)
+ALPHA_VARIANCE_THRESHOLD = 0.001  # Threshold for alpha channel variance (below this = uniform, use DXT1)
 
 
 # ============================================================================
@@ -101,6 +124,7 @@ def is_valid_texture_directory(directory: Path) -> bool:
 def validate_texture_file(path: Path) -> bool:
     """
     Validate that a texture file exists and is readable.
+    Supports both PNG and DDS files (DDS when compression is enabled).
     
     Args:
         path: Path to texture file
@@ -117,7 +141,9 @@ def validate_texture_file(path: Path) -> bool:
     if not os.access(path, os.R_OK):
         return False
     
-    if path.suffix.lower() != INPUT_FILE_FORMAT.lower():
+    # Accept both PNG and DDS files
+    suffix_lower = path.suffix.lower()
+    if suffix_lower not in (INPUT_FILE_FORMAT.lower(), '.dds'):
         return False
     
     return True
@@ -258,6 +284,272 @@ def resolve_texture_directory(script_dir: Path) -> Path:
     # Auto-detection failed, prompt user
     print(f"{Fore.YELLOW}[Auto-detection] No texture files found in script directory or parent.{Style.RESET_ALL}")
     return prompt_directory_selection(script_dir)
+
+
+def prompt_auto_compress() -> bool:
+    """
+    Prompt user if they want to auto-compress textures to DDS format.
+    
+    Returns:
+        True if user wants compression, False otherwise
+        
+    Raises:
+        SystemExit: If user cancels the operation
+    """
+    while True:
+        try:
+            response = input(f"\n{Fore.YELLOW}Do you want to auto-compress textures to DDS format? (y/n): {Style.RESET_ALL}").strip().lower()
+            
+            if not response:
+                print(f"{Fore.YELLOW}Operation cancelled.{Style.RESET_ALL}")
+                raise SystemExit(0)
+            
+            if response in ('yes', 'y'):
+                return True
+            elif response in ('no', 'n'):
+                return False
+            else:
+                print(f"{Fore.RED}Please enter 'y' or 'n'.{Style.RESET_ALL}")
+                continue
+                
+        except KeyboardInterrupt:
+            print(f"\n{Fore.YELLOW}Operation cancelled.{Style.RESET_ALL}")
+            raise SystemExit(0)
+        except Exception as e:
+            print(f"{Fore.RED}Error: {e}{Style.RESET_ALL}")
+            continue
+
+
+# ============================================================================
+# DDS Compression Functions
+# ============================================================================
+
+def has_alpha_channel(image_path: Path) -> bool:
+    """
+    Check if an image has an alpha channel with variance.
+    If alpha channel exists but is uniform (all pixels have same value),
+    returns False to use DXT1 compression instead of DXT5.
+    
+    Args:
+        image_path: Path to image file
+        
+    Returns:
+        True if image has alpha channel with variance, False otherwise
+    """
+    try:
+        with Image.open(image_path) as img:
+            # Convert to RGBA if needed to access alpha channel
+            if img.mode not in ('RGBA', 'LA'):
+                # Check for transparency info in palette mode
+                if img.mode == 'P' and 'transparency' in img.info:
+                    # Convert to RGBA to check alpha variance
+                    img = img.convert('RGBA')
+                else:
+                    return False
+            
+            # Extract alpha channel
+            if img.mode == 'RGBA':
+                alpha_channel = img.split()[3]  # Get alpha channel
+            elif img.mode == 'LA':
+                alpha_channel = img.split()[1]  # Get alpha channel
+            else:
+                return False
+            
+            # Convert alpha channel to numpy array and calculate variance
+            alpha_array = np.array(alpha_channel, dtype=np.float32)
+            
+            # Check if array is empty
+            if alpha_array.size == 0:
+                return False
+            
+            # Calculate variance
+            variance = np.var(alpha_array)
+            
+            # If variance is below threshold, treat as uniform (no meaningful alpha)
+            if variance < ALPHA_VARIANCE_THRESHOLD:
+                return False
+            
+            # Alpha channel has meaningful variance
+            return True
+            
+    except Exception as e:
+        print(f"{Fore.YELLOW}Warning: Could not check alpha channel for {image_path.name}: {e}{Style.RESET_ALL}")
+        return False
+
+
+def convert_png_to_dds(png_path: Path, dds_path: Path, has_alpha: bool) -> Path:
+    """
+    Convert PNG file to DDS format with DXT1 or DXT5 compression and mipmaps.
+    
+    Args:
+        png_path: Path to source PNG file
+        dds_path: Path where DDS file should be created
+        has_alpha: Whether image has alpha channel (determines DXT1 vs DXT5)
+        
+    Returns:
+        Path to created DDS file
+        
+    Raises:
+        RuntimeError: If ImageMagick conversion fails
+    """
+    # Determine compression format
+    compression_format = 'dxt5' if has_alpha else 'dxt1'
+    
+    # Build ImageMagick command
+    # Format: magick input.png -define dds:compression=dxt5 -define dds:mipmaps=auto output.dds
+    cmd = [
+        'magick',
+        str(png_path),
+        '-define', f'dds:compression={compression_format}',
+    ]
+    
+    # Add mipmap generation if enabled
+    if GENERATE_MIPMAPS:
+        cmd.extend(['-define', 'dds:mipmaps=auto'])
+    
+    cmd.append(str(dds_path))
+    
+    try:
+        # Run ImageMagick conversion
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        # Verify DDS file was created
+        if not dds_path.exists():
+            raise RuntimeError(f"DDS file was not created: {dds_path}")
+        
+        return dds_path
+        
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr if e.stderr else str(e)
+        raise RuntimeError(f"ImageMagick conversion failed: {error_msg}")
+    except FileNotFoundError:
+        raise RuntimeError(
+            "ImageMagick 'magick' command not found. "
+            "Please ensure ImageMagick is installed and in your system PATH."
+        )
+
+
+def compress_textures_to_dds(texture_dict: Dict[str, Path], output_dir: Path, enable_compression: bool) -> Tuple[Dict[str, Path], List[Path], dict]:
+    """
+    Compress textures to DDS format if compression is enabled.
+    
+    Args:
+        texture_dict: Dictionary mapping hash IDs to PNG file paths
+        output_dir: Directory where temporary DDS files should be created
+        enable_compression: Whether to enable compression
+        
+    Returns:
+        Tuple of (updated_texture_dict, dds_cleanup_list, compression_stats)
+        - updated_texture_dict: Dictionary with DDS paths instead of PNG (or original if disabled)
+        - dds_cleanup_list: List of temporary DDS file paths to delete later
+        - compression_stats: Dictionary with compression statistics
+    """
+    if not enable_compression:
+        return texture_dict, [], {'enabled': False, 'dxt1_count': 0, 'dxt5_count': 0, 'failed': 0}
+    
+    print(f"\n{Fore.CYAN}[Compressing] Converting textures to DDS format...{Style.RESET_ALL}")
+    
+    updated_dict: Dict[str, Path] = {}
+    cleanup_list: List[Path] = []
+    dxt1_count = 0
+    dxt5_count = 0
+    failed_count = 0
+    
+    total = len(texture_dict)
+    
+    for idx, (hash_str, png_path) in enumerate(texture_dict.items(), 1):
+        # Show progress for operations with more than 10 items
+        if total > 10:
+            show_progress(idx, total, png_path.name, "Compressing")
+        
+        try:
+            # Check for alpha channel
+            has_alpha = has_alpha_channel(png_path)
+            
+            # Create DDS filename (replace .png with .dds)
+            dds_filename = png_path.stem + '.dds'
+            dds_path = output_dir / dds_filename
+            
+            # Convert PNG to DDS
+            convert_png_to_dds(png_path, dds_path, has_alpha)
+            
+            # Update dictionary to point to DDS file
+            updated_dict[hash_str] = dds_path
+            cleanup_list.append(dds_path)
+            
+            # Update statistics
+            if has_alpha:
+                dxt5_count += 1
+            else:
+                dxt1_count += 1
+                
+        except Exception as e:
+            failed_count += 1
+            print(f"\n{Fore.YELLOW}Warning: Failed to compress {png_path.name}: {e}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}Using original PNG file instead.{Style.RESET_ALL}")
+            # Fall back to original PNG file
+            updated_dict[hash_str] = png_path
+    
+    # Clear progress line if shown
+    if total > 10:
+        print('\r' + ' ' * 100 + '\r', end='', flush=True)
+    
+    # Calculate total DDS file size
+    dds_total_size = 0
+    for dds_path in updated_dict.values():
+        try:
+            if dds_path.exists() and dds_path.suffix.lower() == '.dds':
+                dds_total_size += dds_path.stat().st_size
+        except (OSError, PermissionError):
+            pass
+    
+    stats = {
+        'enabled': True,
+        'dxt1_count': dxt1_count,
+        'dxt5_count': dxt5_count,
+        'failed': failed_count,
+        'total': total,
+        'dds_total_size': dds_total_size
+    }
+    
+    print(f"{Fore.GREEN}Compression complete: {dxt1_count} DXT1, {dxt5_count} DXT5, {failed_count} failed{Style.RESET_ALL}")
+    
+    return updated_dict, cleanup_list, stats
+
+
+def cleanup_temp_dds_files(dds_files: List[Path]) -> None:
+    """
+    Delete temporary DDS files after TPF creation.
+    
+    Args:
+        dds_files: List of DDS file paths to delete
+    """
+    if not dds_files:
+        return
+    
+    print(f"\n{Fore.CYAN}[Cleanup] Removing temporary DDS files...{Style.RESET_ALL}")
+    
+    deleted_count = 0
+    failed_count = 0
+    
+    for dds_path in dds_files:
+        try:
+            if dds_path.exists():
+                dds_path.unlink()
+                deleted_count += 1
+        except Exception as e:
+            failed_count += 1
+            print(f"{Fore.YELLOW}Warning: Could not delete {dds_path.name}: {e}{Style.RESET_ALL}")
+    
+    if failed_count == 0:
+        print(f"{Fore.GREEN}Cleaned up {deleted_count} temporary DDS file(s).{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.YELLOW}Cleaned up {deleted_count} file(s), {failed_count} failed.{Style.RESET_ALL}")
 
 
 # ============================================================================
@@ -486,8 +778,7 @@ def create_zip_archive(texture_dict: Dict[str, Path], texmod_def: str, password:
     zip_bytes = zip_buffer.getvalue()
     zip_buffer.close()
     
-    size_mb = len(zip_bytes) / (1024 * 1024)
-    print(f"{Fore.GREEN}ZIP archive created with ZipCrypto encryption: {size_mb:.2f} MB{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}ZIP archive created with ZipCrypto encryption{Style.RESET_ALL}")
     
     return zip_bytes
 
@@ -546,6 +837,26 @@ def write_tpf_file(tpf_bytes: bytes, output_path: Path) -> None:
 # ============================================================================
 # Display Functions
 # ============================================================================
+
+def calculate_total_file_size(texture_dict: Dict[str, Path]) -> int:
+    """
+    Calculate total size of all files in texture dictionary.
+    
+    Args:
+        texture_dict: Dictionary mapping hash IDs to file paths
+        
+    Returns:
+        Total size in bytes
+    """
+    total_size = 0
+    for path in texture_dict.values():
+        try:
+            if path.exists():
+                total_size += path.stat().st_size
+        except (OSError, PermissionError):
+            pass  # Skip files that can't be accessed
+    return total_size
+
 
 def show_progress(current: int, total: int, filename: str, operation: str) -> None:
     """
@@ -645,7 +956,7 @@ def display_scan_summary(texture_dict: Dict[str, Path], directory: Path) -> None
         print(f"\n{Fore.YELLOW}No matching texture files found.{Style.RESET_ALL}")
 
 
-def display_build_summary(stats: dict, tpf_path: Path, build_time: float) -> None:
+def display_build_summary(stats: dict, tpf_path: Path, build_time: float, compression_stats: Optional[dict] = None, original_file_size: Optional[int] = None, dds_file_size: Optional[int] = None) -> None:
     """
     Display formatted summary of the build process.
     
@@ -653,6 +964,9 @@ def display_build_summary(stats: dict, tpf_path: Path, build_time: float) -> Non
         stats: Statistics dictionary with 'total', 'valid', 'missing' keys
         tpf_path: Path to created TPF file
         build_time: Build time in seconds
+        compression_stats: Optional compression statistics dictionary
+        original_file_size: Optional original PNG file size in bytes
+        dds_file_size: Optional total DDS file size in bytes
     """
     print(f"\n{Fore.GREEN}{'='*60}{Style.RESET_ALL}")
     print(f"{Fore.GREEN}TPF Build Complete{Style.RESET_ALL}")
@@ -666,13 +980,39 @@ def display_build_summary(stats: dict, tpf_path: Path, build_time: float) -> Non
     if stats['missing'] > 0:
         print(f"Missing textures: {Fore.YELLOW}{stats['missing']}{Style.RESET_ALL}")
     
+    # Display compression statistics if available
+    if compression_stats and compression_stats.get('enabled'):
+        print(f"\n{Fore.CYAN}Compression:{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}{'-'*60}{Style.RESET_ALL}")
+        print(f"DXT1 (no alpha): {Fore.GREEN}{compression_stats['dxt1_count']}{Style.RESET_ALL}")
+        print(f"DXT5 (with alpha): {Fore.GREEN}{compression_stats['dxt5_count']}{Style.RESET_ALL}")
+        if compression_stats.get('failed', 0) > 0:
+            print(f"Failed conversions: {Fore.YELLOW}{compression_stats['failed']}{Style.RESET_ALL}")
+    
     print(f"\n{Fore.CYAN}Output:{Style.RESET_ALL}")
     print(f"{Fore.CYAN}{'-'*60}{Style.RESET_ALL}")
     print(f"TPF file: {Fore.GREEN}{tpf_path}{Style.RESET_ALL}")
     
+    # Display file sizes together for comparison
     if tpf_path.exists():
-        size_mb = tpf_path.stat().st_size / (1024 * 1024)
-        print(f"File size: {Fore.CYAN}{size_mb:.2f} MB{Style.RESET_ALL}")
+        tpf_size = tpf_path.stat().st_size
+        tpf_mb = tpf_size / (1024 * 1024)
+        
+        if dds_file_size is not None:
+            # Show all three: PNG vs DDS vs TPF
+            original_mb = original_file_size / (1024 * 1024) if original_file_size else 0
+            dds_mb = dds_file_size / (1024 * 1024)
+            print(f"Original PNG files size: {Fore.CYAN}{original_mb:.2f} MB{Style.RESET_ALL}")
+            print(f"Compressed DDS files size: {Fore.CYAN}{dds_mb:.2f} MB{Style.RESET_ALL}")
+            print(f"Final TPF file size: {Fore.GREEN}{tpf_mb:.2f} MB{Style.RESET_ALL}")
+        elif original_file_size is not None:
+            # Show only PNG vs TPF (no compression)
+            original_mb = original_file_size / (1024 * 1024)
+            print(f"Original PNG files size: {Fore.CYAN}{original_mb:.2f} MB{Style.RESET_ALL}")
+            print(f"Final TPF file size: {Fore.GREEN}{tpf_mb:.2f} MB{Style.RESET_ALL}")
+        else:
+            # Show only TPF
+            print(f"Final TPF file size: {Fore.GREEN}{tpf_mb:.2f} MB{Style.RESET_ALL}")
     
     print(f"Build time: {Fore.CYAN}{build_time:.2f} seconds{Style.RESET_ALL}")
     
@@ -744,10 +1084,15 @@ def main() -> None:
     """Main execution function."""
     script_dir = Path(__file__).resolve().parent
     start_time = time.time()
+    dds_cleanup_list: List[Path] = []
+    compression_stats: Optional[dict] = None
     
     try:
         # Step 1: Resolve texture directory (auto-detect or prompt)
         texture_dir = resolve_texture_directory(script_dir)
+        
+        # Step 1.5: Prompt for auto-compression
+        enable_compression = prompt_auto_compress()
         
         # Step 2: Validate target directory is writable
         is_valid, error_msg = is_valid_target_directory(texture_dir)
@@ -777,6 +1122,23 @@ def main() -> None:
             print(f"{Fore.RED}No valid texture files found. Cannot create TPF.{Style.RESET_ALL}")
             return
         
+        # Step 5.25: Calculate original PNG file size (for final summary)
+        original_file_size = calculate_total_file_size(valid_dict)
+        
+        # Step 5.5: Compress textures to DDS if enabled
+        dds_file_size = None
+        if enable_compression:
+            valid_dict, dds_cleanup_list, compression_stats = compress_textures_to_dds(
+                valid_dict, texture_dir, enable_compression
+            )
+            # Display PNG vs DDS size comparison
+            if compression_stats.get('dds_total_size'):
+                dds_file_size = compression_stats['dds_total_size']
+                original_mb = original_file_size / (1024 * 1024)
+                dds_mb = dds_file_size / (1024 * 1024)
+                print(f"\n{Fore.CYAN}Original PNG files size: {Fore.CYAN}{original_mb:.2f} MB{Style.RESET_ALL}")
+                print(f"{Fore.CYAN}Compressed DDS files size: {Fore.CYAN}{dds_mb:.2f} MB{Style.RESET_ALL}")
+        
         # Step 6: Generate texmod.def
         texmod_def = generate_texmod_def(valid_dict)
         
@@ -791,11 +1153,16 @@ def main() -> None:
         tpf_path = texture_dir / tpf_filename
         write_tpf_file(tpf_bytes, tpf_path)
         
+        # Step 9.5: Cleanup temporary DDS files after TPF creation
+        if dds_cleanup_list:
+            cleanup_temp_dds_files(dds_cleanup_list)
+            dds_cleanup_list = []  # Clear list after cleanup
+        
         # Step 10: Display build summary
         build_time = time.time() - start_time
-        display_build_summary(stats, tpf_path, build_time)
+        display_build_summary(stats, tpf_path, build_time, compression_stats, original_file_size, dds_file_size)
         
-        # Step 11: Interactive countdown before exit
+        # Step 12: Interactive countdown before exit
         interactive_countdown(EXIT_DELAY_SECONDS)
         
     except KeyboardInterrupt:
@@ -805,6 +1172,10 @@ def main() -> None:
     except Exception as e:
         print(f"\n{Fore.RED}Error: {e}{Style.RESET_ALL}")
         raise
+    finally:
+        # Ensure cleanup of temporary DDS files even on errors
+        if dds_cleanup_list:
+            cleanup_temp_dds_files(dds_cleanup_list)
 
 
 if __name__ == "__main__":
