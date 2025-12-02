@@ -4,34 +4,187 @@ and create TPF (TexMod Package File) format directly without intermediate log fi
 Operates entirely in-memory using a dictionary to map hash IDs to texture paths.
 """
 
+# Standard library imports (always available, no dependency check needed)
+import sys
+import subprocess
+import importlib.util
 import os
 import re
 import io
 import time
 import struct
 import shutil
-import subprocess
+import zlib
+import zipfile
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
+from zipfile import ZIP_DEFLATED, ZIP_STORED
 
 try:
     import msvcrt
 except ImportError:
     msvcrt = None
 
-try:
-    from zipencrypt import ZipFile, ZIP_DEFLATED
-except ImportError:
-    raise ImportError(
-        "zipencrypt package is required for ZipCrypto encryption. "
-        "Install it with: pip install zipencrypt"
-    )
+# ============================================================================
+# Dependency Checking and Installation
+# ============================================================================
 
+def print_message(message: str, color: str = ''):
+    """Print message with optional color (works even without colorama)."""
+    print(f"{color}{message}\033[0m" if color else message)
+
+def check_and_install_package(package_name: str, import_name: str = None, pip_name: str = None) -> bool:
+    """
+    Check if a Python package is installed, and install it if missing.
+    
+    Args:
+        package_name: Display name of the package
+        import_name: Name to use for import (defaults to package_name)
+        pip_name: Name to use for pip install (defaults to package_name)
+        
+    Returns:
+        True if package is available (after installation attempt), False otherwise
+    """
+    if import_name is None:
+        import_name = package_name
+    if pip_name is None:
+        pip_name = package_name
+    
+    # Check if already installed
+    spec = importlib.util.find_spec(import_name)
+    if spec is not None:
+        return True
+    
+    # Package not found, try to install
+    print_message(f"\n[Checking] {package_name} is not installed.", '\033[93m')  # Yellow
+    print_message(f"[Installing] Attempting to install {package_name} via pip...", '\033[96m')  # Cyan
+    
+    try:
+        # Use subprocess to install via pip
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", pip_name],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        print_message(f"[Success] {package_name} installed successfully!", '\033[92m')  # Green
+        
+        # Verify installation
+        spec = importlib.util.find_spec(import_name)
+        if spec is not None:
+            return True
+        else:
+            print_message(f"[Warning] {package_name} was installed but cannot be imported.", '\033[93m')  # Yellow
+            return False
+            
+    except subprocess.CalledProcessError as e:
+        print_message(f"[Error] Failed to install {package_name}: {e.stderr}", '\033[91m')  # Red
+        print_message(f"[Manual] Please install manually with: pip install {pip_name}", '\033[93m')  # Yellow
+        return False
+    except Exception as e:
+        print_message(f"[Error] Unexpected error installing {package_name}: {e}", '\033[91m')  # Red
+        return False
+
+
+def check_imagemagick() -> bool:
+    """
+    Check if ImageMagick is installed and available in PATH.
+    
+    Returns:
+        True if ImageMagick is available, False otherwise
+    """
+    try:
+        result = subprocess.run(
+            ['magick', '-version'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            return True
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    
+    return False
+
+
+def check_dependencies():
+    """
+    Check all required dependencies and install missing pip packages.
+    Prompts user for ImageMagick installation if missing.
+    
+    Returns:
+        True if all critical dependencies are available, False otherwise
+    """
+    print_message("\n" + "="*60, '\033[96m')  # Cyan
+    print_message("Checking Dependencies", '\033[96m')  # Cyan
+    print_message("="*60, '\033[96m')  # Cyan
+    
+    # Required pip packages
+    required_packages = [
+        ("Pillow", "PIL", "Pillow"),
+        ("numpy", "numpy", "numpy"),
+        ("colorama", "colorama", "colorama"),
+    ]
+    
+    # Optional but recommended packages
+    optional_packages = [
+        ("numba", "numba", "numba"),
+    ]
+    
+    all_ok = True
+    
+    # Check and install required packages
+    print_message("\n[Required Packages]", '\033[96m')  # Cyan
+    for display_name, import_name, pip_name in required_packages:
+        if not check_and_install_package(display_name, import_name, pip_name):
+            print_message(f"[Critical] {display_name} is required but could not be installed!", '\033[91m')  # Red
+            all_ok = False
+    
+    # Check and install optional packages
+    print_message("\n[Optional Packages]", '\033[96m')  # Cyan
+    for display_name, import_name, pip_name in optional_packages:
+        if not check_and_install_package(display_name, import_name, pip_name):
+            print_message(f"[Info] {display_name} is optional but recommended for better performance.", '\033[93m')  # Yellow
+    
+    # Check ImageMagick (optional, only needed for DDS compression)
+    print_message("\n[External Tools]", '\033[96m')  # Cyan
+    if check_imagemagick():
+        print_message("[Found] ImageMagick is installed and available.", '\033[92m')  # Green
+    else:
+        print_message("[Missing] ImageMagick is not found in your system PATH.", '\033[93m')  # Yellow
+        print_message("\nImageMagick is required for optional DDS compression feature.", '\033[93m')  # Yellow
+        print_message("If you want to use DDS compression, please install ImageMagick:", '\033[93m')  # Yellow
+        print_message("  1. Download from: https://imagemagick.org/script/download.php", '\033[96m')  # Cyan
+        print_message("  2. Install ImageMagick on your system", '\033[96m')  # Cyan
+        print_message("  3. Make sure 'magick' command is in your system PATH", '\033[96m')  # Cyan
+        print_message("  4. Verify installation by running: magick -version", '\033[96m')  # Cyan
+        print_message("\n[Note] You can still use the script without ImageMagick,", '\033[93m')  # Yellow
+        print_message("       but DDS compression will not be available.", '\033[93m')  # Yellow
+    
+    print_message("\n" + "="*60, '\033[96m')  # Cyan
+    
+    if not all_ok:
+        print_message("\n[Error] Some required dependencies are missing!", '\033[91m')  # Red
+        print_message("Please install the missing packages and try again.", '\033[91m')  # Red
+        input("\nPress Enter to exit...")
+        sys.exit(1)
+    
+    print_message("[Success] All required dependencies are available!", '\033[92m')  # Green
+    print_message("", '')  # Empty line
+
+
+# Run dependency checks before importing third-party packages that might fail
+check_dependencies()
+
+# Import colorama (should be available now after dependency check)
 try:
     from colorama import init, Fore, Style
     init(autoreset=True)
 except ImportError:
-    # Fallback if colorama is not installed
+    # Fallback if colorama is not installed (shouldn't happen after check)
     class Fore:
         GREEN = ''
         YELLOW = ''
@@ -43,21 +196,590 @@ except ImportError:
     def init(**kwargs):
         pass
 
+# Import Pillow (should be available after dependency check)
 try:
     from PIL import Image
 except ImportError:
-    raise ImportError(
-        "Pillow package is required for alpha channel detection. "
-        "Install it with: pip install Pillow"
-    )
+    print(f"{Fore.RED}[Error] Pillow package is required but not available.{Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}This should not happen if dependency check passed.{Style.RESET_ALL}")
+    input("\nPress Enter to exit...")
+    sys.exit(1)
 
+# Import numpy (should be available after dependency check)
 try:
     import numpy as np
 except ImportError:
-    raise ImportError(
-        "numpy package is required for alpha channel variance calculation. "
-        "Install it with: pip install numpy"
-    )
+    print(f"{Fore.RED}[Error] numpy package is required but not available.{Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}This should not happen if dependency check passed.{Style.RESET_ALL}")
+    input("\nPress Enter to exit...")
+    sys.exit(1)
+
+# ============================================================================
+# Numba-Accelerated ZipCrypto Implementation
+# ============================================================================
+
+# Try to import Numba for JIT compilation
+try:
+    from numba import jit, uint32
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+    # Define a dummy jit decorator that does nothing when numba is unavailable
+    def jit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+    uint32 = None
+
+# ZipCrypto algorithm constants
+KEY0_INIT = 0x12345678
+KEY1_INIT = 0x23456789
+KEY2_INIT = 0x34567890
+LCG_MULTIPLIER = 134775813
+CRC32_POLY = 0xEDB88320
+
+# Precomputed CRC-32 table (will be generated at module load)
+CRC_TABLE = None
+
+
+def _generate_crc_table_python():
+    """Generate CRC-32 lookup table (Python fallback)."""
+    table = []
+    poly = CRC32_POLY
+    for i in range(256):
+        crc = i
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ poly
+            else:
+                crc >>= 1
+        table.append(crc & 0xFFFFFFFF)
+    return table
+
+
+if NUMBA_AVAILABLE and np is not None:
+    @jit(uint32[:](), nopython=True, cache=False)  # cache=False to avoid issues when running as script
+    def _generate_crc_table_numba():
+        """Generate CRC-32 lookup table (Numba-compiled)."""
+        poly = np.uint32(CRC32_POLY)
+        table = np.zeros(256, dtype=np.uint32)
+        for i in range(256):
+            crc = np.uint32(i)
+            for _ in range(8):
+                if crc & 1:
+                    crc = (crc >> 1) ^ poly
+                else:
+                    crc = crc >> 1
+            table[i] = crc
+        return table
+
+    # Generate CRC table at module load
+    try:
+        CRC_TABLE = _generate_crc_table_numba()
+    except Exception:
+        # Fallback to Python if Numba fails
+        CRC_TABLE = np.array(_generate_crc_table_python(), dtype=np.uint32)
+else:
+    # Fallback to Python implementation
+    if np is not None:
+        CRC_TABLE = np.array(_generate_crc_table_python(), dtype=np.uint32)
+    else:
+        CRC_TABLE = _generate_crc_table_python()
+
+
+def _safe_uint32(value):
+    """
+    Safely convert a value to numpy uint32, preventing overflow errors on Windows.
+    
+    This function masks the value to ensure it's within uint32 range before conversion,
+    preventing "Python int too large to convert to C long" errors on Windows systems.
+    
+    Args:
+        value: Integer value (can be Python int, numpy scalar, etc.)
+        
+    Returns:
+        numpy.uint32 value guaranteed to be in valid range
+    """
+    # If already a numpy uint32, return as-is
+    if isinstance(value, np.uint32):
+        return value
+    
+    # Mask to uint32 range (0 to 2^32-1) before conversion
+    # This prevents overflow when converting large Python ints on Windows
+    masked_value = int(value) & 0xFFFFFFFF
+    
+    # Convert to numpy uint32
+    return np.uint32(masked_value)
+
+
+def _init_keys_numba_impl(password_bytes, crc_table):
+    """
+    Initialize ZipCrypto keys from password bytes.
+    
+    Args:
+        password_bytes: uint8 array of password bytes
+        crc_table: Precomputed CRC-32 lookup table
+        
+    Returns:
+        Tuple of (key0, key1, key2) as uint32 values
+    """
+    key0 = np.uint32(KEY0_INIT)
+    key1 = np.uint32(KEY1_INIT)
+    key2 = np.uint32(KEY2_INIT)
+    
+    # Process password through update_keys
+    for i in range(password_bytes.size):
+        p = password_bytes[i]
+        
+        # Update Key0 (CRC32)
+        k0_idx = (key0 ^ p) & 0xFF
+        key0 = (key0 >> 8) ^ crc_table[k0_idx]
+        
+        # Update Key1 (LCG)
+        k1_term = key0 & 0xFF
+        key1 = (key1 + k1_term) * np.uint32(LCG_MULTIPLIER) + np.uint32(1)
+        
+        # Update Key2 (CRC32 MSB)
+        k2_idx = (key2 ^ ((key1 >> 24) & 0xFF)) & 0xFF
+        key2 = (key2 >> 8) ^ crc_table[k2_idx]
+    
+    return key0, key1, key2
+
+
+def _zipcrypto_encrypt_numba_impl(plaintext, key0, key1, key2, crc_table):
+    """
+    Encrypt plaintext using ZipCrypto algorithm (Numba-compiled).
+    
+    Args:
+        plaintext: uint8 array of plaintext bytes
+        key0, key1, key2: Initial state (uint32)
+        crc_table: Precomputed CRC-32 lookup table
+        
+    Returns:
+        Tuple of (ciphertext array, final_key0, final_key1, final_key2)
+    """
+    n = plaintext.size
+    ciphertext = np.zeros_like(plaintext)
+    
+    # Local variables for register allocation
+    k0 = key0
+    k1 = key1
+    k2 = key2
+    
+    for i in range(n):
+        p = plaintext[i]
+        
+        # Generate keystream byte
+        temp = k2 | np.uint32(2)
+        k_byte = np.uint8(((temp * (temp ^ np.uint32(1))) >> 8) & 0xFF)
+        
+        # Encrypt: XOR plaintext with keystream
+        c = p ^ k_byte
+        ciphertext[i] = c
+        
+        # Update keys using PLAINTEXT byte (not ciphertext!)
+        # This is critical for ZipCrypto compatibility
+        k0_idx = (k0 ^ p) & 0xFF
+        k0 = (k0 >> 8) ^ crc_table[k0_idx]
+        
+        k1_term = k0 & 0xFF
+        k1 = (k1 + k1_term) * np.uint32(LCG_MULTIPLIER) + np.uint32(1)
+        
+        k2_idx = (k2 ^ ((k1 >> 24) & 0xFF)) & 0xFF
+        k2 = (k2 >> 8) ^ crc_table[k2_idx]
+    
+    return ciphertext, k0, k1, k2
+
+
+# Conditionally apply numba decorators
+if NUMBA_AVAILABLE:
+    _init_keys_numba = jit(nopython=True, cache=False)(_init_keys_numba_impl)  # cache=False for script compatibility
+    _zipcrypto_encrypt_numba = jit(nopython=True, nogil=True, cache=False)(_zipcrypto_encrypt_numba_impl)
+else:
+    # Use implementations directly without numba (slower but works)
+    _init_keys_numba = _init_keys_numba_impl
+    _zipcrypto_encrypt_numba = _zipcrypto_encrypt_numba_impl
+
+
+def _init_keys_python(password: bytes) -> Tuple[int, int, int]:
+    """Initialize keys from password (Python fallback)."""
+    # Try to use numba if available, but fallback to pure Python if it fails
+    if NUMBA_AVAILABLE and np is not None:
+        try:
+            if isinstance(CRC_TABLE, np.ndarray):
+                crc_table = CRC_TABLE
+            else:
+                crc_table = np.array(CRC_TABLE, dtype=np.uint32)
+            
+            password_arr = np.frombuffer(password, dtype=np.uint8)
+            key0, key1, key2 = _init_keys_numba(password_arr, crc_table)
+            return int(key0), int(key1), int(key2)
+        except (OverflowError, ValueError, TypeError):
+            # Fall through to pure Python implementation
+            pass
+    
+    # Pure Python implementation (fallback)
+    return _init_keys_python_impl(password)
+
+
+def _init_keys_python_impl(password: bytes) -> Tuple[int, int, int]:
+    """
+    Pure Python ZipCrypto key initialization (no NumPy/Numba).
+    Used as final fallback when numba fails or is unavailable.
+    """
+    # Get CRC table (Python list)
+    if isinstance(CRC_TABLE, np.ndarray):
+        crc_table = [int(x) & 0xFFFFFFFF for x in CRC_TABLE]
+    else:
+        crc_table = CRC_TABLE
+    
+    # Initialize keys
+    key0 = KEY0_INIT & 0xFFFFFFFF
+    key1 = KEY1_INIT & 0xFFFFFFFF
+    key2 = KEY2_INIT & 0xFFFFFFFF
+    
+    # Process password through update_keys
+    for p in password:
+        p = p & 0xFF
+        
+        # Update Key0 (CRC32)
+        k0_idx = (key0 ^ p) & 0xFF
+        key0 = ((key0 >> 8) ^ crc_table[k0_idx]) & 0xFFFFFFFF
+        
+        # Update Key1 (LCG)
+        k1_term = key0 & 0xFF
+        key1 = ((key1 + k1_term) * LCG_MULTIPLIER + 1) & 0xFFFFFFFF
+        
+        # Update Key2 (CRC32 MSB)
+        k2_idx = (key2 ^ ((key1 >> 24) & 0xFF)) & 0xFF
+        key2 = ((key2 >> 8) ^ crc_table[k2_idx]) & 0xFFFFFFFF
+    
+    return key0, key1, key2
+
+
+def _zipcrypto_encrypt_python(data: bytes, key0: int, key1: int, key2: int) -> Tuple[bytes, int, int, int]:
+    """Encrypt data (Python fallback)."""
+    # Try to use numba if available, but fallback to pure Python if it fails
+    if NUMBA_AVAILABLE and np is not None:
+        try:
+            if isinstance(CRC_TABLE, np.ndarray):
+                crc_table = CRC_TABLE
+            else:
+                crc_table = np.array(CRC_TABLE, dtype=np.uint32)
+            
+            data_arr = np.frombuffer(data, dtype=np.uint8)
+            # Use safe conversion to prevent overflow errors
+            encrypted_arr, k0, k1, k2 = _zipcrypto_encrypt_numba(
+                data_arr,
+                _safe_uint32(key0),
+                _safe_uint32(key1),
+                _safe_uint32(key2),
+                crc_table
+            )
+            return encrypted_arr.tobytes(), int(k0), int(k1), int(k2)
+        except (OverflowError, ValueError, TypeError):
+            # Fall through to pure Python implementation
+            pass
+    
+    # Pure Python implementation (fallback)
+    return _zipcrypto_encrypt_python_impl(data, key0, key1, key2)
+
+
+def _zipcrypto_encrypt_python_impl(data: bytes, key0: int, key1: int, key2: int) -> Tuple[bytes, int, int, int]:
+    """
+    Pure Python ZipCrypto encryption implementation (no NumPy/Numba).
+    Used as final fallback when numba fails or is unavailable.
+    """
+    # Ensure keys are in uint32 range
+    key0 = int(key0) & 0xFFFFFFFF
+    key1 = int(key1) & 0xFFFFFFFF
+    key2 = int(key2) & 0xFFFFFFFF
+    
+    # Get CRC table (Python list)
+    if isinstance(CRC_TABLE, np.ndarray):
+        crc_table = [int(x) & 0xFFFFFFFF for x in CRC_TABLE]
+    else:
+        crc_table = CRC_TABLE
+    
+    ciphertext = bytearray()
+    k0, k1, k2 = key0, key1, key2
+    
+    for p in data:
+        # Generate keystream byte
+        temp = (k2 | 2) & 0xFFFFFFFF
+        k_byte = ((temp * (temp ^ 1)) >> 8) & 0xFF
+        
+        # Encrypt: XOR plaintext with keystream
+        c = p ^ k_byte
+        ciphertext.append(c)
+        
+        # Update keys using PLAINTEXT byte (not ciphertext!)
+        k0_idx = (k0 ^ p) & 0xFF
+        k0 = ((k0 >> 8) ^ crc_table[k0_idx]) & 0xFFFFFFFF
+        
+        k1_term = k0 & 0xFF
+        k1 = ((k1 + k1_term) * LCG_MULTIPLIER + 1) & 0xFFFFFFFF
+        
+        k2_idx = (k2 ^ ((k1 >> 24) & 0xFF)) & 0xFF
+        k2 = ((k2 >> 8) ^ crc_table[k2_idx]) & 0xFFFFFFFF
+    
+    return bytes(ciphertext), k0, k1, k2
+
+
+def _generate_encryption_header(crc32: int) -> bytes:
+    """
+    Generate 12-byte encryption header for ZipCrypto.
+    
+    The header consists of:
+    - 10 bytes of random initialization data
+    - 2 bytes of check bytes derived from CRC32
+    
+    Args:
+        crc32: CRC32 checksum of the file
+        
+    Returns:
+        12-byte encryption header (plaintext, will be encrypted)
+    """
+    # Generate 10 random bytes for initialization
+    header = bytearray(os.urandom(10))
+    
+    # Last 2 bytes are check bytes derived from CRC32
+    # ZipCrypto uses CRC32's high bytes for password verification
+    header.append((crc32 >> 24) & 0xFF)
+    header.append((crc32 >> 16) & 0xFF)
+    
+    return bytes(header)
+
+
+def encrypt_data(data: bytes, password: bytes) -> bytes:
+    """
+    Encrypt raw data using ZipCrypto.
+    
+    Args:
+        data: Plaintext bytes to encrypt
+        password: Password bytes for encryption
+        
+    Returns:
+        Encrypted bytes (includes 12-byte encrypted header + encrypted data)
+    """
+    if not data:
+        return b''
+    
+    # Calculate CRC32 of plaintext
+    crc32 = zlib.crc32(data) & 0xFFFFFFFF
+    
+    # Generate encryption header (plaintext)
+    header = _generate_encryption_header(crc32)
+    
+    # Initialize keys from password
+    key0, key1, key2 = None, None, None
+    use_numba = False
+    
+    if NUMBA_AVAILABLE and np is not None:
+        try:
+            password_arr = np.frombuffer(password, dtype=np.uint8)
+            if isinstance(CRC_TABLE, np.ndarray):
+                key0, key1, key2 = _init_keys_numba(password_arr, CRC_TABLE)
+                use_numba = True
+            else:
+                key0, key1, key2 = _init_keys_python(password)
+        except (OverflowError, ValueError, TypeError):
+            # Fallback to Python implementation if numba fails
+            key0, key1, key2 = _init_keys_python(password)
+            use_numba = False
+    
+    if key0 is None or key1 is None or key2 is None:
+        key0, key1, key2 = _init_keys_python(password)
+        use_numba = False
+    
+    # Encrypt header (first 12 bytes are encrypted with initial state)
+    encrypted_header = None
+    k0, k1, k2 = None, None, None
+    
+    if use_numba and NUMBA_AVAILABLE and np is not None:
+        try:
+            header_arr = np.frombuffer(header, dtype=np.uint8)
+            if isinstance(CRC_TABLE, np.ndarray):
+                # Use safe conversion to prevent overflow errors
+                encrypted_header, k0, k1, k2 = _zipcrypto_encrypt_numba(
+                    header_arr, _safe_uint32(key0), _safe_uint32(key1), _safe_uint32(key2), CRC_TABLE
+                )
+                encrypted_header = encrypted_header.tobytes()
+            else:
+                encrypted_header, k0, k1, k2 = _zipcrypto_encrypt_python(header, key0, key1, key2)
+                use_numba = False
+        except (OverflowError, ValueError, TypeError):
+            # Fallback to Python implementation if numba encryption fails
+            encrypted_header, k0, k1, k2 = _zipcrypto_encrypt_python(header, key0, key1, key2)
+            use_numba = False
+    
+    if encrypted_header is None:
+        encrypted_header, k0, k1, k2 = _zipcrypto_encrypt_python(header, key0, key1, key2)
+        use_numba = False
+    
+    # Encrypt data (using state after header encryption)
+    encrypted_data = None
+    
+    if use_numba and NUMBA_AVAILABLE and np is not None:
+        try:
+            data_arr = np.frombuffer(data, dtype=np.uint8)
+            if isinstance(CRC_TABLE, np.ndarray):
+                # Use safe conversion to prevent overflow errors
+                encrypted_data, _, _, _ = _zipcrypto_encrypt_numba(
+                    data_arr, _safe_uint32(k0), _safe_uint32(k1), _safe_uint32(k2), CRC_TABLE
+                )
+                encrypted_data = encrypted_data.tobytes()
+            else:
+                encrypted_data, _, _, _ = _zipcrypto_encrypt_python(
+                    data, int(k0), int(k1), int(k2)
+                )
+        except (OverflowError, ValueError, TypeError):
+            # Fallback to Python implementation if numba encryption fails
+            encrypted_data, _, _, _ = _zipcrypto_encrypt_python(data, int(k0), int(k1), int(k2))
+    
+    if encrypted_data is None:
+        encrypted_data, _, _, _ = _zipcrypto_encrypt_python(data, int(k0), int(k1), int(k2))
+    
+    # Combine encrypted header + encrypted data
+    return encrypted_header + encrypted_data
+
+
+class EncryptedZipWriter:
+    """
+    ZIP file writer with ZipCrypto encryption support.
+    
+    This class wraps zipfile.ZipFile to add ZipCrypto encryption while
+    maintaining full PKZip compatibility. It uses Numba-accelerated
+    encryption for performance.
+    """
+    
+    def __init__(self, file, mode='w', compression=ZIP_DEFLATED, allowZip64=True):
+        """
+        Initialize encrypted ZIP writer.
+        
+        Args:
+            file: File path or file-like object
+            mode: 'w' for write, 'a' for append
+            compression: ZIP_DEFLATED or ZIP_STORED
+            allowZip64: Allow ZIP64 extensions
+        """
+        self.zipfile = zipfile.ZipFile(file, mode, compression, allowZip64)
+        self.compression = compression
+        self._password = None
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+    
+    def close(self):
+        """Close the ZIP file."""
+        self.zipfile.close()
+    
+    def writestr(self, zinfo_or_arcname, data, pwd=None, compress_type=None):
+        """
+        Write string data to ZIP with ZipCrypto encryption.
+        
+        Args:
+            zinfo_or_arcname: ZIPInfo object or filename string
+            data: Bytes to write
+            pwd: Password bytes for encryption (required)
+            compress_type: Compression type override
+        """
+        if pwd is None:
+            raise ValueError("Password (pwd) is required for encryption")
+        
+        self._password = pwd
+        
+        # Create ZIPInfo if needed
+        if isinstance(zinfo_or_arcname, str):
+            zinfo = zipfile.ZipInfo(zinfo_or_arcname)
+        else:
+            zinfo = zinfo_or_arcname
+        
+        # Determine compression type for plaintext
+        if compress_type is not None:
+            plaintext_compress_type = compress_type
+        elif self.compression != ZIP_STORED:
+            plaintext_compress_type = self.compression
+        else:
+            plaintext_compress_type = ZIP_STORED
+        
+        # Calculate CRC32 before encryption
+        crc32 = zlib.crc32(data) & 0xFFFFFFFF
+        
+        # Compress plaintext data if needed
+        if plaintext_compress_type == ZIP_DEFLATED:
+            compressed_data = zlib.compress(data, zlib.Z_DEFAULT_COMPRESSION)
+        else:
+            compressed_data = data
+        
+        # Encrypt compressed data (includes 12-byte header)
+        encrypted_data = encrypt_data(compressed_data, pwd)
+        
+        # Update ZIPInfo
+        zinfo.CRC = crc32
+        zinfo.file_size = len(data)  # Original uncompressed size
+        zinfo.compress_size = len(encrypted_data)  # Encrypted+compressed size (includes 12-byte header)
+        
+        # Set encryption flag (bit 0 of general purpose bit flag)
+        zinfo.flag_bits |= 0x01
+        
+        # Write encrypted data to ZIP
+        # Important: The data is already compressed and encrypted, so we must write it
+        # with ZIP_STORED to prevent zipfile from compressing it again.
+        # However, we want the ZIP header to indicate the original compression method.
+        # We'll write with STORED but manually update the compression type in the
+        # ZipInfo before writing (zipfile uses this for the central directory).
+        
+        # Store original compression type
+        original_compress_type = plaintext_compress_type
+        
+        # Write with STORED to prevent double compression
+        zinfo.compress_type = ZIP_STORED
+        self.zipfile.writestr(zinfo, encrypted_data)
+        
+        # Manually update the compression type in the central directory
+        # This is a bit of a hack, but necessary for compatibility
+        # zipfile stores file info in self.filelist, we can update it there
+        if hasattr(self.zipfile, 'filelist') and self.zipfile.filelist:
+            # Update the last added file's compression type
+            last_file = self.zipfile.filelist[-1]
+            if last_file.filename == zinfo.filename:
+                last_file.compress_type = original_compress_type
+                # Also update compress_size to reflect the encrypted size
+                last_file.compress_size = len(encrypted_data)
+    
+    def write(self, filename, arcname=None, pwd=None, compress_type=None):
+        """
+        Write file to ZIP with ZipCrypto encryption.
+        
+        Args:
+            filename: Path to file on disk
+            arcname: Name in archive (defaults to filename)
+            pwd: Password bytes for encryption (required)
+            compress_type: Compression type override
+        """
+        if pwd is None:
+            raise ValueError("Password (pwd) is required for encryption")
+        
+        # Read file data
+        with open(filename, 'rb') as f:
+            data = f.read()
+        
+        # Use writestr with arcname
+        if arcname is None:
+            arcname = os.path.basename(filename)
+        
+        self.writestr(arcname, data, pwd=pwd, compress_type=compress_type)
+
+
+# Compatibility alias
+ZipFile = EncryptedZipWriter
+
+# Set availability flag (Numba-accelerated encryption is now integrated)
+FAST_ZIPCRYPTO_AVAILABLE = NUMBA_AVAILABLE
 
 # Constants
 INPUT_FILE_FORMAT = ".png"
@@ -289,6 +1011,7 @@ def resolve_texture_directory(script_dir: Path) -> Path:
 def prompt_auto_compress() -> bool:
     """
     Prompt user if they want to auto-compress textures to DDS format.
+    Checks for ImageMagick availability first.
     
     Returns:
         True if user wants compression, False otherwise
@@ -296,6 +1019,19 @@ def prompt_auto_compress() -> bool:
     Raises:
         SystemExit: If user cancels the operation
     """
+    # Check if ImageMagick is available
+    if not check_imagemagick():
+        print(f"\n{Fore.YELLOW}[Warning] ImageMagick is not available.{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}DDS compression requires ImageMagick to be installed.{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}To install ImageMagick:{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}  1. Download from: https://imagemagick.org/script/download.php{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}  2. Install ImageMagick on your system{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}  3. Make sure 'magick' command is in your system PATH{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}  4. Restart this script after installation{Style.RESET_ALL}")
+        print(f"\n{Fore.YELLOW}Proceeding without DDS compression...{Style.RESET_ALL}")
+        return False
+    
+    # ImageMagick is available, prompt user
     while True:
         try:
             response = input(f"\n{Fore.YELLOW}Do you want to auto-compress textures to DDS format? (y/n): {Style.RESET_ALL}").strip().lower()
@@ -463,13 +1199,15 @@ def compress_textures_to_dds(texture_dict: Dict[str, Path], output_dir: Path, en
     total = len(texture_dict)
     
     for idx, (hash_str, png_path) in enumerate(texture_dict.items(), 1):
-        # Show progress for operations with more than 10 items
-        if total > 10:
-            show_progress(idx, total, png_path.name, "Compressing")
-        
         try:
             # Check for alpha channel
             has_alpha = has_alpha_channel(png_path)
+            
+            # Determine compression format for display
+            compression_format = "DXT5" if has_alpha else "DXT1"
+            
+            # Show progress bar with format type (always show, not just for >10 items)
+            show_compression_progress(idx, total, png_path.name, compression_format)
             
             # Create DDS filename (replace .png with .dds)
             dds_filename = png_path.stem + '.dds'
@@ -490,14 +1228,17 @@ def compress_textures_to_dds(texture_dict: Dict[str, Path], output_dir: Path, en
                 
         except Exception as e:
             failed_count += 1
-            print(f"\n{Fore.YELLOW}Warning: Failed to compress {png_path.name}: {e}{Style.RESET_ALL}")
+            # Clear progress line before showing error
+            print('\r' + ' ' * 100 + '\r', end='', flush=True)
+            print(f"{Fore.YELLOW}Warning: Failed to compress {png_path.name}: {e}{Style.RESET_ALL}")
             print(f"{Fore.YELLOW}Using original PNG file instead.{Style.RESET_ALL}")
             # Fall back to original PNG file
             updated_dict[hash_str] = png_path
+            # Show progress again after error
+            show_compression_progress(idx, total, png_path.name, "Failed")
     
-    # Clear progress line if shown
-    if total > 10:
-        print('\r' + ' ' * 100 + '\r', end='', flush=True)
+    # Clear progress line
+    print('\r' + ' ' * 100 + '\r', end='', flush=True)
     
     # Calculate total compressed texture file size (DDS + PNG fallbacks)
     compressed_total_size = 0
@@ -891,6 +1632,31 @@ def show_validation_progress(current: int, total: int, filename: str, status: st
     progress_text = (
         f"\r{Fore.CYAN}[{current}/{total}]{Style.RESET_ALL} "
         f"{status_color}{status}{Style.RESET_ALL} | "
+        f"{Fore.CYAN}{bar}{Style.RESET_ALL} {percentage}% | "
+        f"{filename[:40]}"
+    )
+    print(progress_text, end='', flush=True)
+
+
+def show_compression_progress(current: int, total: int, filename: str, format_type: str = "") -> None:
+    """
+    Display progress indicator during DDS compression with progress bar.
+    
+    Args:
+        current: Current file number
+        total: Total number of files
+        filename: Name of file being compressed
+        format_type: Compression format (DXT1/DXT5) or empty string
+    """
+    percentage = int((current / total) * 100) if total > 0 else 0
+    bar_length = 30
+    filled = int(bar_length * current / total) if total > 0 else 0
+    bar = '█' * filled + '░' * (bar_length - filled)
+    
+    format_text = f" ({format_type})" if format_type else ""
+    progress_text = (
+        f"\r{Fore.CYAN}[{current}/{total}]{Style.RESET_ALL} "
+        f"{Fore.CYAN}Compressing{Style.RESET_ALL}{format_text} | "
         f"{Fore.CYAN}{bar}{Style.RESET_ALL} {percentage}% | "
         f"{filename[:40]}"
     )
