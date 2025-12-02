@@ -411,7 +411,7 @@ def convert_png_to_dds(png_path: Path, dds_path: Path, has_alpha: bool) -> Path:
     
     try:
         # Run ImageMagick conversion
-        result = subprocess.run(
+        subprocess.run(
             cmd,
             capture_output=True,
             text=True,
@@ -499,22 +499,22 @@ def compress_textures_to_dds(texture_dict: Dict[str, Path], output_dir: Path, en
     if total > 10:
         print('\r' + ' ' * 100 + '\r', end='', flush=True)
     
-    # Calculate total DDS file size
-    dds_total_size = 0
-    for dds_path in updated_dict.values():
+    # Calculate total compressed texture file size (DDS + PNG fallbacks)
+    compressed_total_size = 0
+    for texture_path in updated_dict.values():
         try:
-            if dds_path.exists() and dds_path.suffix.lower() == '.dds':
-                dds_total_size += dds_path.stat().st_size
+            if texture_path.exists():
+                compressed_total_size += texture_path.stat().st_size
         except (OSError, PermissionError):
             pass
-    
+
     stats = {
         'enabled': True,
         'dxt1_count': dxt1_count,
         'dxt5_count': dxt5_count,
         'failed': failed_count,
         'total': total,
-        'dds_total_size': dds_total_size
+        'compressed_total_size': compressed_total_size
     }
     
     print(f"{Fore.GREEN}Compression complete: {dxt1_count} DXT1, {dxt5_count} DXT5, {failed_count} failed{Style.RESET_ALL}")
@@ -956,7 +956,7 @@ def display_scan_summary(texture_dict: Dict[str, Path], directory: Path) -> None
         print(f"\n{Fore.YELLOW}No matching texture files found.{Style.RESET_ALL}")
 
 
-def display_build_summary(stats: dict, tpf_path: Path, build_time: float, compression_stats: Optional[dict] = None, original_file_size: Optional[int] = None, dds_file_size: Optional[int] = None) -> None:
+def display_build_summary(stats: dict, tpf_path: Path, build_time: float, compression_stats: Optional[dict] = None, original_file_size: Optional[int] = None, compressed_file_size: Optional[int] = None) -> None:
     """
     Display formatted summary of the build process.
     
@@ -998,12 +998,12 @@ def display_build_summary(stats: dict, tpf_path: Path, build_time: float, compre
         tpf_size = tpf_path.stat().st_size
         tpf_mb = tpf_size / (1024 * 1024)
         
-        if dds_file_size is not None:
-            # Show all three: PNG vs DDS vs TPF
+        if compressed_file_size is not None:
+            # Show all three: PNG vs compressed vs TPF
             original_mb = original_file_size / (1024 * 1024) if original_file_size else 0
-            dds_mb = dds_file_size / (1024 * 1024)
+            compressed_mb = compressed_file_size / (1024 * 1024)
             print(f"Original PNG files size: {Fore.CYAN}{original_mb:.2f} MB{Style.RESET_ALL}")
-            print(f"Compressed DDS files size: {Fore.CYAN}{dds_mb:.2f} MB{Style.RESET_ALL}")
+            print(f"Compressed texture files size: {Fore.CYAN}{compressed_mb:.2f} MB{Style.RESET_ALL}")
             print(f"Final TPF file size: {Fore.GREEN}{tpf_mb:.2f} MB{Style.RESET_ALL}")
         elif original_file_size is not None:
             # Show only PNG vs TPF (no compression)
@@ -1086,6 +1086,7 @@ def main() -> None:
     start_time = time.time()
     dds_cleanup_list: List[Path] = []
     compression_stats: Optional[dict] = None
+    compressed_file_size: Optional[int] = None
     
     try:
         # Step 1: Resolve texture directory (auto-detect or prompt)
@@ -1126,18 +1127,17 @@ def main() -> None:
         original_file_size = calculate_total_file_size(valid_dict)
         
         # Step 5.5: Compress textures to DDS if enabled
-        dds_file_size = None
         if enable_compression:
             valid_dict, dds_cleanup_list, compression_stats = compress_textures_to_dds(
                 valid_dict, texture_dir, enable_compression
             )
-            # Display PNG vs DDS size comparison
-            if compression_stats.get('dds_total_size'):
-                dds_file_size = compression_stats['dds_total_size']
+            # Display PNG vs compressed texture size comparison
+            if compression_stats.get('compressed_total_size'):
+                compressed_file_size = compression_stats['compressed_total_size']
                 original_mb = original_file_size / (1024 * 1024)
-                dds_mb = dds_file_size / (1024 * 1024)
+                compressed_mb = compressed_file_size / (1024 * 1024)
                 print(f"\n{Fore.CYAN}Original PNG files size: {Fore.CYAN}{original_mb:.2f} MB{Style.RESET_ALL}")
-                print(f"{Fore.CYAN}Compressed DDS files size: {Fore.CYAN}{dds_mb:.2f} MB{Style.RESET_ALL}")
+                print(f"{Fore.CYAN}Compressed texture files size: {Fore.CYAN}{compressed_mb:.2f} MB{Style.RESET_ALL}")
         
         # Step 6: Generate texmod.def
         texmod_def = generate_texmod_def(valid_dict)
@@ -1160,7 +1160,7 @@ def main() -> None:
         
         # Step 10: Display build summary
         build_time = time.time() - start_time
-        display_build_summary(stats, tpf_path, build_time, compression_stats, original_file_size, dds_file_size)
+        display_build_summary(stats, tpf_path, build_time, compression_stats, original_file_size, compressed_file_size)
         
         # Step 12: Interactive countdown before exit
         interactive_countdown(EXIT_DELAY_SECONDS)

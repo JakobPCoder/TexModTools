@@ -9,7 +9,7 @@ TexModTools provides a complete workflow for extracting, processing, and packagi
 ## Copyright Notice
 
 - **TexModTools**
-- First published 2022 - Copyright, Jakob Wapenhensch
+- First published 2022 - Copyright, Jakob Wapenhensch (2025 updates)
 - Check LICENSE.md for full license text
 - https://creativecommons.org/licenses/by-nc/4.0/
 - https://creativecommons.org/licenses/by-nc/4.0/legalcode
@@ -193,6 +193,14 @@ If your TPF file doesn't load in TexMod/OpenTexMod:
 
 ## Updates
 
+### Version 0.4
+- Enhanced `TexturesToTpf.py` with optional DDS compression for smaller TPF files
+- Added intelligent alpha channel variance detection (DXT1 for uniform/no alpha, DXT5 for varying alpha)
+- Automatic mipmap generation for improved texture performance
+- Improved compression statistics and file size reporting (PNG vs compressed vs TPF)
+- Fixed size calculation bug when compression fails (now includes fallback PNGs in totals)
+
+
 ### Version 0.3
 - Added `1toPng.py` - Improved DDS to PNG conversion
 - Added `splitAlpha.py` - Alpha channel separation tool
@@ -217,4 +225,4 @@ This project is licensed under the Creative Commons Attribution-NonCommercial 4.
 ## Credits
 
 - **OpenTexMod** - Open-source implementation by the modding community
-- **TexModTools Scripts** - Jakob Wapenhensch (2022)
+- **TexModTools Scripts** - Jakob Wapenhensch (2022, 2025 updates)
