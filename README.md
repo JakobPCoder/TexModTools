@@ -179,17 +179,7 @@ If `TexturesToTpf.py` fails during DDS compression with 'magick' errors:
 - **Conversion failures:** Some PNGs may not convert due to format issues; the script skips them and uses PNG fallback. Review the build summary for failed counts.
 - **Verify compression:** Check the final summary for DXT1/DXT5 counts and size reductions. Test the TPF in OpenTexMod to ensure textures load correctly.
 
-### Missing Textures
-If `TexturesToTpf.py` reports missing textures:
-- Verify all PNG files exist in the scanned directory
-- Check file permissions (ensure files are readable)
-- Ensure filenames match the required pattern `*_0X[hex].png`
-
-### TPF Not Loading
-If your TPF file doesn't load in TexMod/OpenTexMod:
-- Verify texture IDs match the original game textures
-- Ensure filenames follow the exact pattern required
-- Check that all referenced textures are included in the package
+**Note:** The `TexturesToTpf.py` script includes comprehensive validation and will automatically detect most issues. However, these troubleshooting steps address edge cases like file permission problems or external factors that the script cannot control.
 
 ## Updates
 
