@@ -4,7 +4,7 @@ A collection of Python scripts and tools for creating texture mods for DirectX 9
 
 ## About
 
-TexModTools provides a complete workflow for extracting, processing, and packaging game textures. The tools support both the original TexMod and the modern OpenTexMod implementations, allowing you to create texture replacement mods for classic DirectX 9 games.
+TexModTools provides a complete workflow for extracting, processing, and packaging game textures. The tools support the modern OpenTexMod implementation, allowing you to create texture replacement mods for classic DirectX 9 games.
 
 ## Copyright Notice
 
@@ -16,7 +16,6 @@ TexModTools provides a complete workflow for extracting, processing, and packagi
 
 ## Contents
 
-- **Original TexMod** - Legacy TexMod v0.9b executable for building TPF packages
 - **OpenTexMod** - Modern OpenTexMod beta_v1_r21 with enhanced compatibility
 - **Python Scripts** - Automated tools for texture processing and TPF creation
 
@@ -133,7 +132,7 @@ If you need to edit alpha channels separately:
 4. The script creates a `.tpf` file ready for use
 
 ### Step 6: Use Your Mod
-1. Launch **OpenTexMod.exe** (or **TexMod.exe**)
+1. Launch **OpenTexMod.exe**
 2. Select your game executable
 3. Load the `.tpf` file you created
 4. Run the game and enjoy your texture mod!
@@ -183,7 +182,6 @@ If your TPF file doesn't load in TexMod/OpenTexMod:
 
 ### Version 0.2
 - Added OpenTexMod files (no maintained download source available)
-- Added original TexMod.exe for ease of use
 - Fixed various issues
 
 ### Version 0.1
@@ -197,6 +195,5 @@ This project is licensed under the Creative Commons Attribution-NonCommercial 4.
 
 ## Credits
 
-- **Original TexMod** - Developed by RS (Tomb Raider: Legend, 2006)
 - **OpenTexMod** - Open-source implementation by the modding community
 - **TexModTools Scripts** - Jakob Wapenhensch (2022)
