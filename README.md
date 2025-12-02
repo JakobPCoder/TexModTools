@@ -9,7 +9,7 @@ TexModTools provides a complete workflow for extracting, processing, and packagi
 ## Copyright Notice
 
 - **TexModTools**
-- First published 2022 - Copyright, Jakob Wapenhensch (2025 updates)
+- First published 2022 - Copyright, Jakob Wapenhensch 
 - Check LICENSE.md for full license text
 - https://creativecommons.org/licenses/by-nc/4.0/
 - https://creativecommons.org/licenses/by-nc/4.0/legalcode
