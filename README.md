@@ -16,7 +16,7 @@ TexModTools provides a complete workflow for extracting, processing, and packagi
 
 ## Contents
 
-- **OpenTexMod** - Modern OpenTexMod beta_v1_r21 with enhanced compatibility
+- **OpenTexMod** - Modern OpenTexMod beta_v1_r21, hosted here because no maintained download source was found
 - **Python Scripts** - Automated tools for texture processing and TPF creation
 
 ## Requirements
