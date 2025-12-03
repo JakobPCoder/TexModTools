@@ -14,8 +14,6 @@ import io
 import time
 import struct
 import shutil
-import zlib
-import zipfile
 import configparser
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
@@ -330,6 +328,119 @@ XOR_KEY = 0x3FA43FA4
 
 # Pattern: _0X or _0x followed by hex digits, must end at end of filename (before extension)
 ID_PATTERN = re.compile(r'_0[xX]([0-9A-Fa-f]+)$')
+
+
+# ============================================================================
+# Cache Functions
+# ============================================================================
+
+def calculate_file_hash(file_path: Path) -> str:
+    """
+    Calculate MD5 hash of file content.
+
+    Args:
+        file_path: Path to the file to hash
+
+    Returns:
+        MD5 hash as hexadecimal string
+    """
+    import hashlib
+
+    hash_md5 = hashlib.md5()
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+    except (OSError, IOError) as e:
+        print(f"{Fore.YELLOW}Warning: Could not hash file {file_path.name}: {e}{Style.RESET_ALL}")
+        return ""
+
+
+def load_cache(cache_path: Path) -> Dict[str, dict]:
+    """
+    Load cache data from JSON file.
+
+    Args:
+        cache_path: Path to the cache.json file
+
+    Returns:
+        Dictionary containing cache data, empty dict if file doesn't exist or is invalid
+    """
+    import json
+
+    if not cache_path.exists():
+        return {}
+
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError, IOError) as e:
+        print(f"{Fore.YELLOW}Warning: Could not load cache file {cache_path}: {e}{Style.RESET_ALL}")
+        return {}
+
+
+def save_cache(cache_path: Path, cache_data: Dict[str, dict]) -> None:
+    """
+    Save cache data to JSON file.
+
+    Args:
+        cache_path: Path to save the cache.json file
+        cache_data: Dictionary containing cache data to save
+    """
+    import json
+
+    try:
+        # Create parent directory if it doesn't exist
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2, ensure_ascii=False)
+    except (OSError, IOError) as e:
+        print(f"{Fore.YELLOW}Warning: Could not save cache file {cache_path}: {e}{Style.RESET_ALL}")
+
+
+def compare_with_cache(texture_dict: Dict[str, Path], cache_data: Dict[str, dict], texture_dir: Path) -> Dict[str, str]:
+    """
+    Compare current texture files against cache to determine status.
+
+    Args:
+        texture_dict: Dictionary mapping hash IDs to file paths
+        cache_data: Dictionary containing cache data
+        texture_dir: Base texture directory for relative path calculation
+
+    Returns:
+        Dictionary mapping hash IDs to status ("new", "changed", "unchanged")
+    """
+    status_dict: Dict[str, str] = {}
+
+    for hash_id, texture_path in texture_dict.items():
+        # Calculate relative path for cache key
+        try:
+            relative_path = texture_path.relative_to(texture_dir)
+            cache_key = str(relative_path)
+        except ValueError:
+            # Fallback to absolute path if relative path calculation fails
+            cache_key = str(texture_path)
+
+        # Calculate current file hash
+        current_hash = calculate_file_hash(texture_path)
+        if not current_hash:
+            # Could not hash file, treat as new
+            status_dict[hash_id] = "new"
+            continue
+
+        # Check if file is in cache
+        if cache_key in cache_data:
+            cached_hash = cache_data[cache_key].get('hash', '')
+            if current_hash == cached_hash:
+                status_dict[hash_id] = "unchanged"
+            else:
+                status_dict[hash_id] = "changed"
+        else:
+            status_dict[hash_id] = "new"
+
+    return status_dict
 
 
 # ============================================================================
@@ -907,13 +1018,14 @@ def get_texture_dimensions(texture_path: Path) -> Tuple[int, int]:
         return (0, 0)
 
 
-def display_texture_classification(texture_dict: Dict[str, Path], classifications: Dict[str, str]) -> None:
+def display_texture_classification(texture_dict: Dict[str, Path], classifications: Dict[str, str], status_dict: Optional[Dict[str, str]] = None) -> None:
     """
     Display texture classification results with statistics and dimensions.
-    
+
     Args:
         texture_dict: Dictionary mapping hash IDs to texture file paths
         classifications: Dictionary mapping hash IDs to texture type classifications
+        status_dict: Optional dictionary mapping hash IDs to cache status ("new", "changed", "unchanged")
     """
     print(f"\n{Fore.CYAN}{'='*80}{Style.RESET_ALL}")
     print(f"{Fore.CYAN}Texture Classification Results{Style.RESET_ALL}")
@@ -941,24 +1053,27 @@ def display_texture_classification(texture_dict: Dict[str, Path], classification
     # Show detailed list if not too many
     if len(classifications) <= 20:
         print(f"\n{Fore.YELLOW}Detailed Classification:{Style.RESET_ALL}")
-        print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
-        
+        print(f"{Fore.WHITE}{'-'*90}{Style.RESET_ALL}")
+
         # Print column headers
-        print(f"{Fore.CYAN}{'ID':<17} | {'Type':<13} | {'Size (width x height)':<22} | {'File Size':<12} | {'Filename'}{Style.RESET_ALL}")
-        print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+        if status_dict:
+            print(f"{Fore.CYAN}{'ID':<17} | {'Type':<13} | {'Size (width x height)':<22} | {'File Size':<12} | {'Status':<10} | {'Filename'}{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.CYAN}{'ID':<17} | {'Type':<13} | {'Size (width x height)':<22} | {'File Size':<12} | {'Filename'}{Style.RESET_ALL}")
+        print(f"{Fore.WHITE}{'-'*90}{Style.RESET_ALL}")
         
         # Print each texture with dimensions
         for hash_str, texture_path in texture_dict.items():
             texture_type = classifications.get(hash_str, "Unknown")
             type_color = Fore.GREEN if texture_type == "RGBA" else (Fore.BLUE if texture_type == "RGB Color" else Fore.MAGENTA)
-            
+
             # Get dimensions - numbers in light blue, parentheses and x in white
             width, height = get_texture_dimensions(texture_path)
             if width > 0 and height > 0:
                 dim_str = f"{Fore.WHITE}({Fore.CYAN}{width}{Fore.WHITE}x{Fore.CYAN}{height}{Fore.WHITE}){Style.RESET_ALL}"
             else:
                 dim_str = "N/A"
-            
+
             # Get file size in MB
             try:
                 file_size_bytes = texture_path.stat().st_size
@@ -966,16 +1081,34 @@ def display_texture_classification(texture_dict: Dict[str, Path], classification
                 size_str = f"{Fore.WHITE}{file_size_mb:.1f} MB{Style.RESET_ALL}"
             except (OSError, PermissionError):
                 size_str = "N/A"
-            
-            print(f"{Fore.CYAN}{hash_str:<17}{Style.RESET_ALL} | {type_color}{texture_type:<13}{Style.RESET_ALL} | {dim_str:<22} | {size_str:<12} | {texture_path.name}")
-        
-        print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+
+            # Get status with color coding
+            if status_dict:
+                status = status_dict.get(hash_str, "unknown")
+                if status == "unchanged":
+                    status_color = Fore.GREEN
+                    status_display = "Unchanged"
+                elif status == "changed":
+                    status_color = Fore.YELLOW
+                    status_display = "Changed"
+                elif status == "new":
+                    status_color = Fore.CYAN
+                    status_display = "New"
+                else:
+                    status_color = Fore.WHITE
+                    status_display = status.capitalize()
+
+                print(f"{Fore.CYAN}{hash_str:<17}{Style.RESET_ALL} | {type_color}{texture_type:<13}{Style.RESET_ALL} | {dim_str:<22} | {size_str:<12} | {status_color}{status_display:<10}{Style.RESET_ALL} | {texture_path.name}")
+            else:
+                print(f"{Fore.CYAN}{hash_str:<17}{Style.RESET_ALL} | {type_color}{texture_type:<13}{Style.RESET_ALL} | {dim_str:<22} | {size_str:<12} | {texture_path.name}")
+
+        print(f"{Fore.WHITE}{'-'*90}{Style.RESET_ALL}")
     
     # Print summary below the table
     print(f"\n{Fore.CYAN}Classification Summary:{Style.RESET_ALL}")
-    print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+    print(f"{Fore.WHITE}{'-'*90}{Style.RESET_ALL}")
     print(f"{Fore.CYAN}{'Type':<25} | {'Count':<10} | {'Total Size':<15} | {'Avg Size':<15}{Style.RESET_ALL}")
-    print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+    print(f"{Fore.WHITE}{'-'*90}{Style.RESET_ALL}")
     
     # Calculate sizes per type
     rgba_size = sum(texture_path.stat().st_size for hash_str, texture_path in texture_dict.items() 
@@ -996,22 +1129,26 @@ def display_texture_classification(texture_dict: Dict[str, Path], classification
     print(f"{Fore.GREEN}{'RGBA (Color + Alpha)':<25}{Style.RESET_ALL} | {Fore.WHITE}{rgba_count:<10}{Style.RESET_ALL} | {Fore.WHITE}{rgba_size_mb:>13.1f} MB{Style.RESET_ALL} | {Fore.WHITE}{rgba_avg:>13.1f} MB{Style.RESET_ALL}")
     print(f"{Fore.BLUE}{'RGB Color (no alpha)':<25}{Style.RESET_ALL} | {Fore.WHITE}{rgb_color_count:<10}{Style.RESET_ALL} | {Fore.WHITE}{rgb_color_size_mb:>13.1f} MB{Style.RESET_ALL} | {Fore.WHITE}{rgb_color_avg:>13.1f} MB{Style.RESET_ALL}")
     print(f"{Fore.MAGENTA}{'RGB Normal (2 channels)':<25}{Style.RESET_ALL} | {Fore.WHITE}{rgb_normal_count:<10}{Style.RESET_ALL} | {Fore.WHITE}{rgb_normal_size_mb:>13.1f} MB{Style.RESET_ALL} | {Fore.WHITE}{rgb_normal_avg:>13.1f} MB{Style.RESET_ALL}")
-    print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+    print(f"{Fore.WHITE}{'-'*90}{Style.RESET_ALL}")
     print(f"{Fore.CYAN}{'Total textures':<25}{Style.RESET_ALL} | {Fore.WHITE}{len(classifications):<10}{Style.RESET_ALL} | {Fore.WHITE}{total_size_mb:>13.1f} MB{Style.RESET_ALL} | {Fore.WHITE}{avg_size_mb:>13.1f} MB{Style.RESET_ALL}")
-    print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+    print(f"{Fore.WHITE}{'-'*90}{Style.RESET_ALL}")
 
 
-def compress_textures_to_dds(texture_dict: Dict[str, Path], classifications: Dict[str, str], output_dir: Path, enable_compression: bool) -> Tuple[Dict[str, Path], List[Path], dict]:
+def compress_textures_to_dds(texture_dict: Dict[str, Path], classifications: Dict[str, str], output_dir: Path, enable_compression: bool, status_dict: Optional[Dict[str, str]] = None, cache_data: Optional[Dict[str, dict]] = None, texture_dir: Optional[Path] = None) -> Tuple[Dict[str, Path], List[Path], dict]:
     """
     Compress textures to DDS format if compression is enabled.
     Uses texture classification to determine compression format.
-    
+    Only compresses files that are new or changed according to cache status.
+
     Args:
         texture_dict: Dictionary mapping hash IDs to PNG file paths
         classifications: Dictionary mapping hash IDs to texture type classifications
-        output_dir: Directory where temporary DDS files should be created
+        output_dir: Directory where temporary DDS files should be created (legacy parameter, now uses texture_dir/compressed/)
         enable_compression: Whether to enable compression
-        
+        status_dict: Optional dictionary mapping hash IDs to cache status ("new", "changed", "unchanged")
+        cache_data: Optional dictionary containing cache data for updating
+        texture_dir: Base texture directory for cache and compressed file paths
+
     Returns:
         Tuple of (updated_texture_dict, dds_cleanup_list, compression_stats)
         - updated_texture_dict: Dictionary with DDS paths instead of PNG (or original if disabled)
@@ -1020,48 +1157,105 @@ def compress_textures_to_dds(texture_dict: Dict[str, Path], classifications: Dic
     """
     if not enable_compression:
         return texture_dict, [], {'enabled': False, 'dxt1_count': 0, 'dxt5_count': 0, 'failed': 0}
-    
+
+    # Determine compressed directory
+    if texture_dir:
+        compressed_dir = texture_dir / "compressed"
+    else:
+        compressed_dir = output_dir
+
+    # Ensure compressed directory exists
+    compressed_dir.mkdir(parents=True, exist_ok=True)
+
     print(f"\n{Fore.CYAN}[Compressing] Converting textures to DDS format...{Style.RESET_ALL}")
-    
+
     updated_dict: Dict[str, Path] = {}
-    cleanup_list: List[Path] = []
+    cleanup_list: List[Path] = []  # Will be empty now since we keep DDS files
     dxt1_count = 0
     dxt5_count = 0
     failed_count = 0
-    
+    skipped_count = 0
+
     total = len(texture_dict)
-    
-    for idx, (hash_str, png_path) in enumerate(texture_dict.items(), 1):
+
+    # Filter files that need compression (new or changed)
+    files_to_compress = []
+    for hash_str, png_path in texture_dict.items():
+        status = status_dict.get(hash_str, "new") if status_dict else "new"
+        if status in ("new", "changed"):
+            files_to_compress.append((hash_str, png_path))
+        else:
+            # For unchanged files, try to use cached DDS
+            if cache_data and texture_dir:
+                try:
+                    relative_path = png_path.relative_to(texture_dir)
+                    cache_key = str(relative_path)
+                    cache_entry = cache_data.get(cache_key, {})
+                    dds_rel_path = cache_entry.get('dds_path')
+                    if dds_rel_path:
+                        dds_path = texture_dir / dds_rel_path
+                        if dds_path.exists():
+                            updated_dict[hash_str] = dds_path
+                            skipped_count += 1
+                            continue
+                except (ValueError, KeyError):
+                    pass
+            # If no cached DDS found, treat as new
+            files_to_compress.append((hash_str, png_path))
+
+    # Compress only the files that need it
+    for idx, (hash_str, png_path) in enumerate(files_to_compress, 1):
         try:
             # Get texture classification
             texture_type = classifications.get(hash_str, "RGB Color")
-            
+
             # Determine compression format based on classification
             # RGBA and RGB Normal use DXT5, RGB Color (non-normal, no alpha) uses DXT1
             has_alpha = (texture_type == "RGBA" or texture_type == "RGB Normal")
             compression_format = "DXT5" if has_alpha else "DXT1"
-            
+
             # Show progress bar with format type and texture type
             format_text = f"{compression_format} ({texture_type})"
-            _show_progress(idx, total, png_path.name, "Compressing", format_type=format_text, use_bar=True)
-            
+            _show_progress(idx, len(files_to_compress), png_path.name, "Compressing", format_type=format_text, use_bar=True)
+
             # Create DDS filename (replace .png with .dds)
             dds_filename = png_path.stem + '.dds'
-            dds_path = output_dir / dds_filename
-            
+            dds_path = compressed_dir / dds_filename
+
             # Convert PNG to DDS
             convert_png_to_dds(png_path, dds_path, has_alpha)
-            
+
             # Update dictionary to point to DDS file
             updated_dict[hash_str] = dds_path
-            cleanup_list.append(dds_path)
-            
+
+            # Update cache entry if we have cache data and texture_dir
+            if cache_data is not None and texture_dir:
+                try:
+                    relative_path = png_path.relative_to(texture_dir)
+                    cache_key = str(relative_path)
+                    dds_rel_path = f"compressed/{dds_filename}"
+
+                    # Calculate file info
+                    current_hash = calculate_file_hash(png_path)
+                    file_size = png_path.stat().st_size if png_path.exists() else 0
+                    timestamp = png_path.stat().st_mtime if png_path.exists() else time.time()
+
+                    cache_data[cache_key] = {
+                        'hash': current_hash,
+                        'timestamp': timestamp,
+                        'compression_type': compression_format,
+                        'file_size': file_size,
+                        'dds_path': dds_rel_path
+                    }
+                except (ValueError, OSError):
+                    pass
+
             # Update statistics
             if has_alpha:
                 dxt5_count += 1
             else:
                 dxt1_count += 1
-                
+
         except Exception as e:
             failed_count += 1
             # Clear progress line before showing error
@@ -1071,7 +1265,7 @@ def compress_textures_to_dds(texture_dict: Dict[str, Path], classifications: Dic
             # Fall back to original PNG file
             updated_dict[hash_str] = png_path
             # Show progress again after error
-            _show_progress(idx, total, png_path.name, "Compressing", format_type="Failed", use_bar=True)
+            _show_progress(idx, len(files_to_compress), png_path.name, "Compressing", format_type="Failed", use_bar=True)
     
     # Clear progress line
     print('\r' + ' ' * 100 + '\r', end='', flush=True)
@@ -1085,17 +1279,23 @@ def compress_textures_to_dds(texture_dict: Dict[str, Path], classifications: Dic
         except (OSError, PermissionError):
             pass
 
+    # Save cache if we have cache data and texture directory
+    if cache_data is not None and texture_dir:
+        cache_path = texture_dir / "compressed" / "cache.json"
+        save_cache(cache_path, cache_data)
+
     stats = {
         'enabled': True,
         'dxt1_count': dxt1_count,
         'dxt5_count': dxt5_count,
         'failed': failed_count,
+        'skipped': skipped_count,
         'total': total,
         'compressed_total_size': compressed_total_size
     }
-    
-    print(f"{Fore.GREEN}Compression complete: {dxt1_count} DXT1, {dxt5_count} DXT5, {failed_count} failed{Style.RESET_ALL}")
-    
+
+    print(f"{Fore.GREEN}Compression complete: {dxt1_count} DXT1, {dxt5_count} DXT5, {failed_count} failed, {skipped_count} skipped{Style.RESET_ALL}")
+
     return updated_dict, cleanup_list, stats
 
 
@@ -1336,7 +1536,7 @@ def create_zip_archive(texture_dict: Dict[str, Path], texmod_def: str, password:
         for idx, (_, texture_path) in enumerate(texture_dict.items(), 1):
             # Show progress for operations with more than 10 items
             if total > 10:
-                _show_progress(idx, total + 1, texture_path.name, "Adding", use_bar=True)  # +1 for texmod.def
+                _show_progress(idx, total, texture_path.name, "Adding", use_bar=True)
             
             try:
                 # Read file and add to ZIP with filename only (flat structure)
@@ -1626,18 +1826,28 @@ def _scan_and_validate_textures(texture_dir: Path) -> Tuple[Optional[Dict[str, P
 def _classify_and_compress_textures(valid_dict: Dict[str, Path], texture_dir: Path) -> Tuple[Dict[str, Path], List[Path], Optional[dict], Optional[int], Optional[int]]:
     """Classify textures and compress if requested."""
     classifications = classify_all_textures(valid_dict)
-    display_texture_classification(valid_dict, classifications)
-    
+
+    # Load cache data
+    cache_path = texture_dir / "compressed" / "cache.json"
+    cache_data = load_cache(cache_path)
+
+    # Compare with cache to get status
+    status_dict = compare_with_cache(valid_dict, cache_data, texture_dir)
+
+    # Display classifications with status
+    display_texture_classification(valid_dict, classifications, status_dict)
+
     enable_compression = prompt_auto_compress()
     original_file_size = calculate_total_file_size(valid_dict)
-    
+
     dds_cleanup_list = []
     compression_stats = None
     compressed_file_size = None
-    
+
     if enable_compression:
         valid_dict, dds_cleanup_list, compression_stats = compress_textures_to_dds(
-            valid_dict, classifications, texture_dir, enable_compression
+            valid_dict, classifications, texture_dir, enable_compression,
+            status_dict=status_dict, cache_data=cache_data, texture_dir=texture_dir
         )
         if compression_stats.get('compressed_total_size'):
             compressed_file_size = compression_stats['compressed_total_size']
@@ -1645,7 +1855,7 @@ def _classify_and_compress_textures(valid_dict: Dict[str, Path], texture_dir: Pa
             compressed_mb = compressed_file_size / (1024 * 1024)
             print(f"\n{Fore.CYAN}Original PNG files size: {Fore.CYAN}{original_mb:.2f} MB{Style.RESET_ALL}")
             print(f"{Fore.CYAN}Compressed texture files size: {Fore.CYAN}{compressed_mb:.2f} MB{Style.RESET_ALL}")
-    
+
     return valid_dict, dds_cleanup_list, compression_stats, original_file_size, compressed_file_size
 
 
@@ -1674,7 +1884,11 @@ def main() -> None:
         texture_dir = _resolve_and_validate_directory(script_dir)
         if not texture_dir:
             return
-        
+
+        # Ensure compressed directory exists
+        compressed_dir = texture_dir / "compressed"
+        compressed_dir.mkdir(parents=True, exist_ok=True)
+
         result = _scan_and_validate_textures(texture_dir)
         if result[0] is None:
             return
@@ -1684,11 +1898,7 @@ def main() -> None:
         valid_dict, dds_cleanup_list, compression_stats, original_file_size, compressed_file_size = result
         
         tpf_path = _build_tpf_file(valid_dict, texture_dir)
-        
-        if dds_cleanup_list:
-            cleanup_temp_dds_files(dds_cleanup_list)
-            dds_cleanup_list = []
-        
+
         build_time = time.time() - start_time
         display_build_summary(stats, tpf_path, build_time, compression_stats, original_file_size, compressed_file_size)
         
@@ -1699,9 +1909,6 @@ def main() -> None:
     except Exception as e:
         print(f"\n{Fore.RED}Error: {e}{Style.RESET_ALL}")
         raise
-    finally:
-        if dds_cleanup_list:
-            cleanup_temp_dds_files(dds_cleanup_list)
 
 
 if __name__ == "__main__":
