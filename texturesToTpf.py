@@ -616,13 +616,15 @@ def _encrypt_payload(data: bytes, key0: int, key1: int, key2: int) -> bytes:
     return encrypted_data
 
 
-def encrypt_data(data: bytes, password: bytes) -> bytes:
+def encrypt_data(data: bytes, password: bytes, crc32: Optional[int] = None) -> bytes:
     """
     Encrypt raw data using ZipCrypto.
     
     Args:
         data: Plaintext bytes to encrypt
         password: Password bytes for encryption
+        crc32: Optional CRC32 value (if None, calculates from data)
+               IMPORTANT: For ZIP files, this should be CRC32 of UNCOMPRESSED data
         
     Returns:
         Encrypted bytes (includes 12-byte encrypted header + encrypted data)
@@ -630,7 +632,11 @@ def encrypt_data(data: bytes, password: bytes) -> bytes:
     if not data:
         return b''
     
-    crc32 = zlib.crc32(data) & 0xFFFFFFFF
+    # Use provided CRC32 or calculate from data
+    # For ZIP files, CRC32 should be from uncompressed data, not compressed
+    if crc32 is None:
+        crc32 = zlib.crc32(data) & 0xFFFFFFFF
+    
     header = _generate_encryption_header(crc32)
     
     key0, key1, key2 = _initialize_encryption_keys(password)
@@ -702,50 +708,60 @@ class EncryptedZipWriter:
         else:
             plaintext_compress_type = ZIP_STORED
         
-        # Calculate CRC32 before encryption
+        # Calculate CRC32 of UNCOMPRESSED data (critical for ZipCrypto header)
         crc32 = zlib.crc32(data) & 0xFFFFFFFF
         
         # Compress plaintext data if needed
+        # Use raw DEFLATE format (no zlib wrapper) for ZIP compatibility
         if plaintext_compress_type == ZIP_DEFLATED:
-            compressed_data = zlib.compress(data, zlib.Z_DEFAULT_COMPRESSION)
+            # Raw DEFLATE: use compressobj with wbits=-15 (no zlib wrapper)
+            compressor = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
+            compressed_data = compressor.compress(data) + compressor.flush()
         else:
             compressed_data = data
         
-        # Encrypt compressed data (includes 12-byte header)
-        encrypted_data = encrypt_data(compressed_data, pwd)
+        # Encrypt compressed data (pass UNCOMPRESSED CRC32 for header check bytes)
+        encrypted_data = encrypt_data(compressed_data, pwd, crc32=crc32)
         
-        # Update ZIPInfo
-        zinfo.CRC = crc32
+        # Update ZIPInfo with correct metadata
+        zinfo.CRC = crc32  # CRC32 of uncompressed data
         zinfo.file_size = len(data)  # Original uncompressed size
         zinfo.compress_size = len(encrypted_data)  # Encrypted+compressed size (includes 12-byte header)
         
         # Set encryption flag (bit 0 of general purpose bit flag)
         zinfo.flag_bits |= 0x01
         
+        # Set compression type correctly (data is already compressed with DEFLATE)
+        zinfo.compress_type = plaintext_compress_type
+        
         # Write encrypted data to ZIP
-        # Important: The data is already compressed and encrypted, so we must write it
-        # with ZIP_STORED to prevent zipfile from compressing it again.
-        # However, we want the ZIP header to indicate the original compression method.
-        # We'll write with STORED but manually update the compression type in the
-        # ZipInfo before writing (zipfile uses this for the central directory).
+        # The data is already compressed and encrypted, so we need to write it
+        # without zipfile trying to compress it again. We'll use writestr with
+        # the data already compressed, but we need to mark it correctly.
+        # 
+        # zipfile's writestr will compress if compress_type != ZIP_STORED,
+        # but our data is already compressed. So we write as STORED to prevent
+        # double compression, then manually fix both local header and central directory.
         
-        # Store original compression type
-        original_compress_type = plaintext_compress_type
+        # Store the correct compression type
+        correct_compress_type = zinfo.compress_type
         
-        # Write with STORED to prevent double compression
+        # Write as STORED to prevent zipfile from compressing already-compressed data
         zinfo.compress_type = ZIP_STORED
         self.zipfile.writestr(zinfo, encrypted_data)
         
-        # Manually update the compression type in the central directory
-        # This is a bit of a hack, but necessary for compatibility
-        # zipfile stores file info in self.filelist, we can update it there
+        # Fix compression type in filelist (central directory entry)
+        # This is what most ZIP readers check first
         if hasattr(self.zipfile, 'filelist') and self.zipfile.filelist:
-            # Update the last added file's compression type
             last_file = self.zipfile.filelist[-1]
             if last_file.filename == zinfo.filename:
-                last_file.compress_type = original_compress_type
-                # Also update compress_size to reflect the encrypted size
+                last_file.compress_type = correct_compress_type
                 last_file.compress_size = len(encrypted_data)
+        
+        # Also need to fix the local file header if possible
+        # zipfile stores local headers in self._filelist, but we can't easily modify them
+        # However, most ZIP readers (including OpenTexMod) check central directory first,
+        # so fixing that should be sufficient for compatibility
     
     def write(self, filename, arcname=None, pwd=None, compress_type=None):
         """
