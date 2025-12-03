@@ -2164,8 +2164,6 @@ def main() -> None:
         build_time = time.time() - start_time
         display_build_summary(stats, tpf_path, build_time, compression_stats, original_file_size, compressed_file_size)
         
-        input("\nPress Enter to exit...")
-        
     except KeyboardInterrupt:
         print(f"\n{Fore.YELLOW}Operation cancelled by user.{Style.RESET_ALL}")
     except SystemExit:
