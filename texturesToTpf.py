@@ -16,6 +16,7 @@ import struct
 import shutil
 import zlib
 import zipfile
+import configparser
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 from zipfile import ZIP_DEFLATED, ZIP_STORED
@@ -26,10 +27,88 @@ except ImportError:
     msvcrt = None
 
 # ============================================================================
+# Configuration Loading
+# ============================================================================
+
+def load_config() -> Dict:
+    """
+    Load configuration from config.ini file, or use defaults if not found.
+    Returns a dictionary with configuration values.
+    """
+    # Default values
+    defaults = {
+        'input_formats': ['.png', '.jpg', '.jpeg', '.bmp'],
+        'generate_mipmaps': True,
+        'channel_variance_threshold': 0.001,
+        'normal_variance_threshold': 0.01
+    }
+    
+    # Get the directory where this script is located
+    script_dir = Path(__file__).parent
+    config_path = script_dir / 'config.ini'
+    
+    # Check if config.ini exists
+    if not config_path.exists():
+        print("No config.ini detected, using defaults")
+        return defaults
+    
+    # Parse config file
+    config = configparser.ConfigParser()
+    try:
+        config.read(config_path)
+        
+        result = defaults.copy()
+        
+        # Load FileFormats section
+        if config.has_section('FileFormats'):
+            if config.has_option('FileFormats', 'input_formats'):
+                formats_str = config.get('FileFormats', 'input_formats')
+                # Split by comma, strip whitespace, convert to lowercase, and add dot prefix if needed
+                formats_list = []
+                for f in formats_str.split(','):
+                    f = f.strip().lower()
+                    if f:
+                        # Add dot prefix if not already present
+                        if not f.startswith('.'):
+                            f = '.' + f
+                        formats_list.append(f)
+                result['input_formats'] = formats_list
+        
+        # Load DDS section
+        if config.has_section('DDS'):
+            if config.has_option('DDS', 'generate_mipmaps'):
+                result['generate_mipmaps'] = config.getboolean('DDS', 'generate_mipmaps')
+            if config.has_option('DDS', 'channel_variance_threshold'):
+                result['channel_variance_threshold'] = config.getfloat('DDS', 'channel_variance_threshold')
+            if config.has_option('DDS', 'normal_variance_threshold'):
+                result['normal_variance_threshold'] = config.getfloat('DDS', 'normal_variance_threshold')
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error reading config.ini: {e}, using defaults")
+        return defaults
+
+# Load configuration once at module level
+_config = load_config()
+
+# ============================================================================
+# Configuration Constants (User-configurable)
+# ============================================================================
+
+# File format settings
+INPUT_FORMATS = _config['input_formats']
+
+# DDS compression settings
+GENERATE_MIPMAPS = _config['generate_mipmaps']
+CHANNEL_VARIANCE_THRESHOLD = _config['channel_variance_threshold']  # Threshold for alpha channel variance (below this = uniform/unused)
+NORMAL_VARIANCE_THRESHOLD = _config['normal_variance_threshold']  # Threshold for normal map channel detection (10x higher, below this = unused channel)
+
+# ============================================================================
 # Dependency Checking and Installation
 # ============================================================================
 
-def print_message(message: str, color: str = ''):
+def _print_colored(message: str, color: str = ''):
     """Print message with optional color (works even without colorama)."""
     print(f"{color}{message}\033[0m" if color else message)
 
@@ -56,8 +135,8 @@ def check_and_install_package(package_name: str, import_name: str = None, pip_na
         return True
     
     # Package not found, try to install
-    print_message(f"\n[Checking] {package_name} is not installed.", '\033[93m')  # Yellow
-    print_message(f"[Installing] Attempting to install {package_name} via pip...", '\033[96m')  # Cyan
+    _print_colored(f"\n[Checking] {package_name} is not installed.", '\033[93m')  # Yellow
+    _print_colored(f"[Installing] Attempting to install {package_name} via pip...", '\033[96m')  # Cyan
     
     try:
         # Use subprocess to install via pip
@@ -67,22 +146,22 @@ def check_and_install_package(package_name: str, import_name: str = None, pip_na
             text=True,
             check=True
         )
-        print_message(f"[Success] {package_name} installed successfully!", '\033[92m')  # Green
+        _print_colored(f"[Success] {package_name} installed successfully!", '\033[92m')  # Green
         
         # Verify installation
         spec = importlib.util.find_spec(import_name)
         if spec is not None:
             return True
         else:
-            print_message(f"[Warning] {package_name} was installed but cannot be imported.", '\033[93m')  # Yellow
+            _print_colored(f"[Warning] {package_name} was installed but cannot be imported.", '\033[93m')  # Yellow
             return False
             
     except subprocess.CalledProcessError as e:
-        print_message(f"[Error] Failed to install {package_name}: {e.stderr}", '\033[91m')  # Red
-        print_message(f"[Manual] Please install manually with: pip install {pip_name}", '\033[93m')  # Yellow
+        _print_colored(f"[Error] Failed to install {package_name}: {e.stderr}", '\033[91m')  # Red
+        _print_colored(f"[Manual] Please install manually with: pip install {pip_name}", '\033[93m')  # Yellow
         return False
     except Exception as e:
-        print_message(f"[Error] Unexpected error installing {package_name}: {e}", '\033[91m')  # Red
+        _print_colored(f"[Error] Unexpected error installing {package_name}: {e}", '\033[91m')  # Red
         return False
 
 
@@ -118,9 +197,9 @@ def check_dependencies():
     Returns:
         True if all critical dependencies are available, False otherwise
     """
-    print_message("\n" + "="*60, '\033[96m')  # Cyan
-    print_message("Checking Dependencies", '\033[96m')  # Cyan
-    print_message("="*60, '\033[96m')  # Cyan
+    _print_colored("\n" + "="*60, '\033[96m')  # Cyan
+    _print_colored("Checking Dependencies", '\033[96m')  # Cyan
+    _print_colored("="*60, '\033[96m')  # Cyan
     
     # Required pip packages
     required_packages = [
@@ -137,43 +216,43 @@ def check_dependencies():
     all_ok = True
     
     # Check and install required packages
-    print_message("\n[Required Packages]", '\033[96m')  # Cyan
+    _print_colored("\n[Required Packages]", '\033[96m')  # Cyan
     for display_name, import_name, pip_name in required_packages:
         if not check_and_install_package(display_name, import_name, pip_name):
-            print_message(f"[Critical] {display_name} is required but could not be installed!", '\033[91m')  # Red
+            _print_colored(f"[Critical] {display_name} is required but could not be installed!", '\033[91m')  # Red
             all_ok = False
     
     # Check and install optional packages
-    print_message("\n[Optional Packages]", '\033[96m')  # Cyan
+    _print_colored("\n[Optional Packages]", '\033[96m')  # Cyan
     for display_name, import_name, pip_name in optional_packages:
         if not check_and_install_package(display_name, import_name, pip_name):
-            print_message(f"[Info] {display_name} is optional but recommended for better performance.", '\033[93m')  # Yellow
+            _print_colored(f"[Info] {display_name} is optional but recommended for better performance.", '\033[93m')  # Yellow
     
     # Check ImageMagick (optional, only needed for DDS compression)
-    print_message("\n[External Tools]", '\033[96m')  # Cyan
+    _print_colored("\n[External Tools]", '\033[96m')  # Cyan
     if check_imagemagick():
-        print_message("[Found] ImageMagick is installed and available.", '\033[92m')  # Green
+        _print_colored("[Found] ImageMagick is installed and available.", '\033[92m')  # Green
     else:
-        print_message("[Missing] ImageMagick is not found in your system PATH.", '\033[93m')  # Yellow
-        print_message("\nImageMagick is required for optional DDS compression feature.", '\033[93m')  # Yellow
-        print_message("If you want to use DDS compression, please install ImageMagick:", '\033[93m')  # Yellow
-        print_message("  1. Download from: https://imagemagick.org/script/download.php", '\033[96m')  # Cyan
-        print_message("  2. Install ImageMagick on your system", '\033[96m')  # Cyan
-        print_message("  3. Make sure 'magick' command is in your system PATH", '\033[96m')  # Cyan
-        print_message("  4. Verify installation by running: magick -version", '\033[96m')  # Cyan
-        print_message("\n[Note] You can still use the script without ImageMagick,", '\033[93m')  # Yellow
-        print_message("       but DDS compression will not be available.", '\033[93m')  # Yellow
+        _print_colored("[Missing] ImageMagick is not found in your system PATH.", '\033[93m')  # Yellow
+        _print_colored("\nImageMagick is required for optional DDS compression feature.", '\033[93m')  # Yellow
+        _print_colored("If you want to use DDS compression, please install ImageMagick:", '\033[93m')  # Yellow
+        _print_colored("  1. Download from: https://imagemagick.org/script/download.php", '\033[96m')  # Cyan
+        _print_colored("  2. Install ImageMagick on your system", '\033[96m')  # Cyan
+        _print_colored("  3. Make sure 'magick' command is in your system PATH", '\033[96m')  # Cyan
+        _print_colored("  4. Verify installation by running: magick -version", '\033[96m')  # Cyan
+        _print_colored("\n[Note] You can still use the script without ImageMagick,", '\033[93m')  # Yellow
+        _print_colored("       but DDS compression will not be available.", '\033[93m')  # Yellow
     
-    print_message("\n" + "="*60, '\033[96m')  # Cyan
+    _print_colored("\n" + "="*60, '\033[96m')  # Cyan
     
     if not all_ok:
-        print_message("\n[Error] Some required dependencies are missing!", '\033[91m')  # Red
-        print_message("Please install the missing packages and try again.", '\033[91m')  # Red
+        _print_colored("\n[Error] Some required dependencies are missing!", '\033[91m')  # Red
+        _print_colored("Please install the missing packages and try again.", '\033[91m')  # Red
         input("\nPress Enter to exit...")
         sys.exit(1)
     
-    print_message("[Success] All required dependencies are available!", '\033[92m')  # Green
-    print_message("", '')  # Empty line
+    _print_colored("[Success] All required dependencies are available!", '\033[92m')  # Green
+    _print_colored("", '')  # Empty line
 
 
 # Run dependency checks before importing third-party packages that might fail
@@ -190,6 +269,9 @@ except ImportError:
         YELLOW = ''
         CYAN = ''
         RED = ''
+        BLUE = ''
+        MAGENTA = ''
+        WHITE = ''
         RESET = ''
     class Style:
         RESET_ALL = ''
@@ -231,18 +313,11 @@ except ImportError:
         return decorator
     uint32 = None
 
-# ZipCrypto algorithm constants
-KEY0_INIT = 0x12345678
-KEY1_INIT = 0x23456789
-KEY2_INIT = 0x34567890
-LCG_MULTIPLIER = 134775813
-CRC32_POLY = 0xEDB88320
-
 # Precomputed CRC-32 table (will be generated at module load)
 CRC_TABLE = None
 
 
-def _generate_crc_table_python():
+def _generate_crc_table():
     """Generate CRC-32 lookup table (Python fallback)."""
     table = []
     poly = CRC32_POLY
@@ -261,7 +336,7 @@ if NUMBA_AVAILABLE and np is not None:
     @jit(uint32[:](), nopython=True, cache=False)  # cache=False to avoid issues when running as script
     def _generate_crc_table_numba():
         """Generate CRC-32 lookup table (Numba-compiled)."""
-        poly = np.uint32(CRC32_POLY)
+        poly = np.uint32(0xEDB88320)  # CRC32_POLY constant (hardcoded for Numba compilation)
         table = np.zeros(256, dtype=np.uint32)
         for i in range(256):
             crc = np.uint32(i)
@@ -278,13 +353,13 @@ if NUMBA_AVAILABLE and np is not None:
         CRC_TABLE = _generate_crc_table_numba()
     except Exception:
         # Fallback to Python if Numba fails
-        CRC_TABLE = np.array(_generate_crc_table_python(), dtype=np.uint32)
+        CRC_TABLE = np.array(_generate_crc_table(), dtype=np.uint32)
 else:
     # Fallback to Python implementation
     if np is not None:
-        CRC_TABLE = np.array(_generate_crc_table_python(), dtype=np.uint32)
+        CRC_TABLE = np.array(_generate_crc_table(), dtype=np.uint32)
     else:
-        CRC_TABLE = _generate_crc_table_python()
+        CRC_TABLE = _generate_crc_table()
 
 
 def _safe_uint32(value):
@@ -401,9 +476,11 @@ else:
     _zipcrypto_encrypt_numba = _zipcrypto_encrypt_numba_impl
 
 
-def _init_keys_python(password: bytes) -> Tuple[int, int, int]:
-    """Initialize keys from password (Python fallback)."""
-    # Try to use numba if available, but fallback to pure Python if it fails
+def _init_keys(password: bytes) -> Tuple[int, int, int]:
+    """
+    Initialize ZipCrypto keys from password.
+    Tries Numba first, falls back to NumPy/Python if needed.
+    """
     if NUMBA_AVAILABLE and np is not None:
         try:
             if isinstance(CRC_TABLE, np.ndarray):
@@ -415,51 +492,37 @@ def _init_keys_python(password: bytes) -> Tuple[int, int, int]:
             key0, key1, key2 = _init_keys_numba(password_arr, crc_table)
             return int(key0), int(key1), int(key2)
         except (OverflowError, ValueError, TypeError):
-            # Fall through to pure Python implementation
             pass
     
-    # Pure Python implementation (fallback)
-    return _init_keys_python_impl(password)
-
-
-def _init_keys_python_impl(password: bytes) -> Tuple[int, int, int]:
-    """
-    Pure Python ZipCrypto key initialization (no NumPy/Numba).
-    Used as final fallback when numba fails or is unavailable.
-    """
-    # Get CRC table (Python list)
+    # NumPy/Python fallback
     if isinstance(CRC_TABLE, np.ndarray):
-        crc_table = [int(x) & 0xFFFFFFFF for x in CRC_TABLE]
-    else:
         crc_table = CRC_TABLE
+    else:
+        crc_table = np.array(CRC_TABLE, dtype=np.uint32)
     
-    # Initialize keys
-    key0 = KEY0_INIT & 0xFFFFFFFF
-    key1 = KEY1_INIT & 0xFFFFFFFF
-    key2 = KEY2_INIT & 0xFFFFFFFF
+    password_arr = np.frombuffer(password, dtype=np.uint8)
+    key0 = np.uint32(KEY0_INIT)
+    key1 = np.uint32(KEY1_INIT)
+    key2 = np.uint32(KEY2_INIT)
     
-    # Process password through update_keys
-    for p in password:
-        p = p & 0xFF
-        
-        # Update Key0 (CRC32)
+    for p in password_arr:
         k0_idx = (key0 ^ p) & 0xFF
-        key0 = ((key0 >> 8) ^ crc_table[k0_idx]) & 0xFFFFFFFF
+        key0 = (key0 >> 8) ^ crc_table[k0_idx]
         
-        # Update Key1 (LCG)
         k1_term = key0 & 0xFF
-        key1 = ((key1 + k1_term) * LCG_MULTIPLIER + 1) & 0xFFFFFFFF
+        key1 = (key1 + k1_term) * np.uint32(LCG_MULTIPLIER) + np.uint32(1)
         
-        # Update Key2 (CRC32 MSB)
         k2_idx = (key2 ^ ((key1 >> 24) & 0xFF)) & 0xFF
-        key2 = ((key2 >> 8) ^ crc_table[k2_idx]) & 0xFFFFFFFF
+        key2 = (key2 >> 8) ^ crc_table[k2_idx]
     
-    return key0, key1, key2
+    return int(key0), int(key1), int(key2)
 
 
-def _zipcrypto_encrypt_python(data: bytes, key0: int, key1: int, key2: int) -> Tuple[bytes, int, int, int]:
-    """Encrypt data (Python fallback)."""
-    # Try to use numba if available, but fallback to pure Python if it fails
+def _zipcrypto_encrypt(data: bytes, key0: int, key1: int, key2: int) -> Tuple[bytes, int, int, int]:
+    """
+    Encrypt data using ZipCrypto.
+    Tries Numba first, falls back to NumPy/Python if needed.
+    """
     if NUMBA_AVAILABLE and np is not None:
         try:
             if isinstance(CRC_TABLE, np.ndarray):
@@ -468,7 +531,6 @@ def _zipcrypto_encrypt_python(data: bytes, key0: int, key1: int, key2: int) -> T
                 crc_table = np.array(CRC_TABLE, dtype=np.uint32)
             
             data_arr = np.frombuffer(data, dtype=np.uint8)
-            # Use safe conversion to prevent overflow errors
             encrypted_arr, k0, k1, k2 = _zipcrypto_encrypt_numba(
                 data_arr,
                 _safe_uint32(key0),
@@ -478,52 +540,39 @@ def _zipcrypto_encrypt_python(data: bytes, key0: int, key1: int, key2: int) -> T
             )
             return encrypted_arr.tobytes(), int(k0), int(k1), int(k2)
         except (OverflowError, ValueError, TypeError):
-            # Fall through to pure Python implementation
             pass
     
-    # Pure Python implementation (fallback)
-    return _zipcrypto_encrypt_python_impl(data, key0, key1, key2)
-
-
-def _zipcrypto_encrypt_python_impl(data: bytes, key0: int, key1: int, key2: int) -> Tuple[bytes, int, int, int]:
-    """
-    Pure Python ZipCrypto encryption implementation (no NumPy/Numba).
-    Used as final fallback when numba fails or is unavailable.
-    """
-    # Ensure keys are in uint32 range
-    key0 = int(key0) & 0xFFFFFFFF
-    key1 = int(key1) & 0xFFFFFFFF
-    key2 = int(key2) & 0xFFFFFFFF
-    
-    # Get CRC table (Python list)
+    # NumPy/Python fallback
     if isinstance(CRC_TABLE, np.ndarray):
-        crc_table = [int(x) & 0xFFFFFFFF for x in CRC_TABLE]
-    else:
         crc_table = CRC_TABLE
+    else:
+        crc_table = np.array(CRC_TABLE, dtype=np.uint32)
     
-    ciphertext = bytearray()
-    k0, k1, k2 = key0, key1, key2
+    data_arr = np.frombuffer(data, dtype=np.uint8)
+    k0 = _safe_uint32(key0)
+    k1 = _safe_uint32(key1)
+    k2 = _safe_uint32(key2)
     
-    for p in data:
-        # Generate keystream byte
-        temp = (k2 | 2) & 0xFFFFFFFF
-        k_byte = ((temp * (temp ^ 1)) >> 8) & 0xFF
+    ciphertext = np.zeros_like(data_arr)
+    
+    for i in range(data_arr.size):
+        p = data_arr[i]
         
-        # Encrypt: XOR plaintext with keystream
-        c = p ^ k_byte
-        ciphertext.append(c)
+        temp = k2 | np.uint32(2)
+        k_byte = np.uint8(((temp * (temp ^ np.uint32(1))) >> 8) & 0xFF)
         
-        # Update keys using PLAINTEXT byte (not ciphertext!)
+        ciphertext[i] = p ^ k_byte
+        
         k0_idx = (k0 ^ p) & 0xFF
-        k0 = ((k0 >> 8) ^ crc_table[k0_idx]) & 0xFFFFFFFF
+        k0 = (k0 >> 8) ^ crc_table[k0_idx]
         
         k1_term = k0 & 0xFF
-        k1 = ((k1 + k1_term) * LCG_MULTIPLIER + 1) & 0xFFFFFFFF
+        k1 = (k1 + k1_term) * np.uint32(LCG_MULTIPLIER) + np.uint32(1)
         
         k2_idx = (k2 ^ ((k1 >> 24) & 0xFF)) & 0xFF
-        k2 = ((k2 >> 8) ^ crc_table[k2_idx]) & 0xFFFFFFFF
+        k2 = (k2 >> 8) ^ crc_table[k2_idx]
     
-    return bytes(ciphertext), k0, k1, k2
+    return ciphertext.tobytes(), int(k0), int(k1), int(k2)
 
 
 def _generate_encryption_header(crc32: int) -> bytes:
@@ -551,6 +600,22 @@ def _generate_encryption_header(crc32: int) -> bytes:
     return bytes(header)
 
 
+def _initialize_encryption_keys(password: bytes) -> Tuple[int, int, int]:
+    """Initialize encryption keys from password."""
+    return _init_keys(password)
+
+
+def _encrypt_header(header: bytes, key0: int, key1: int, key2: int) -> Tuple[bytes, int, int, int]:
+    """Encrypt the 12-byte header and return encrypted header with updated keys."""
+    return _zipcrypto_encrypt(header, key0, key1, key2)
+
+
+def _encrypt_payload(data: bytes, key0: int, key1: int, key2: int) -> bytes:
+    """Encrypt the payload data."""
+    encrypted_data, _, _, _ = _zipcrypto_encrypt(data, key0, key1, key2)
+    return encrypted_data
+
+
 def encrypt_data(data: bytes, password: bytes) -> bytes:
     """
     Encrypt raw data using ZipCrypto.
@@ -565,82 +630,13 @@ def encrypt_data(data: bytes, password: bytes) -> bytes:
     if not data:
         return b''
     
-    # Calculate CRC32 of plaintext
     crc32 = zlib.crc32(data) & 0xFFFFFFFF
-    
-    # Generate encryption header (plaintext)
     header = _generate_encryption_header(crc32)
     
-    # Initialize keys from password
-    key0, key1, key2 = None, None, None
-    use_numba = False
+    key0, key1, key2 = _initialize_encryption_keys(password)
+    encrypted_header, k0, k1, k2 = _encrypt_header(header, key0, key1, key2)
+    encrypted_data = _encrypt_payload(data, k0, k1, k2)
     
-    if NUMBA_AVAILABLE and np is not None:
-        try:
-            password_arr = np.frombuffer(password, dtype=np.uint8)
-            if isinstance(CRC_TABLE, np.ndarray):
-                key0, key1, key2 = _init_keys_numba(password_arr, CRC_TABLE)
-                use_numba = True
-            else:
-                key0, key1, key2 = _init_keys_python(password)
-        except (OverflowError, ValueError, TypeError):
-            # Fallback to Python implementation if numba fails
-            key0, key1, key2 = _init_keys_python(password)
-            use_numba = False
-    
-    if key0 is None or key1 is None or key2 is None:
-        key0, key1, key2 = _init_keys_python(password)
-        use_numba = False
-    
-    # Encrypt header (first 12 bytes are encrypted with initial state)
-    encrypted_header = None
-    k0, k1, k2 = None, None, None
-    
-    if use_numba and NUMBA_AVAILABLE and np is not None:
-        try:
-            header_arr = np.frombuffer(header, dtype=np.uint8)
-            if isinstance(CRC_TABLE, np.ndarray):
-                # Use safe conversion to prevent overflow errors
-                encrypted_header, k0, k1, k2 = _zipcrypto_encrypt_numba(
-                    header_arr, _safe_uint32(key0), _safe_uint32(key1), _safe_uint32(key2), CRC_TABLE
-                )
-                encrypted_header = encrypted_header.tobytes()
-            else:
-                encrypted_header, k0, k1, k2 = _zipcrypto_encrypt_python(header, key0, key1, key2)
-                use_numba = False
-        except (OverflowError, ValueError, TypeError):
-            # Fallback to Python implementation if numba encryption fails
-            encrypted_header, k0, k1, k2 = _zipcrypto_encrypt_python(header, key0, key1, key2)
-            use_numba = False
-    
-    if encrypted_header is None:
-        encrypted_header, k0, k1, k2 = _zipcrypto_encrypt_python(header, key0, key1, key2)
-        use_numba = False
-    
-    # Encrypt data (using state after header encryption)
-    encrypted_data = None
-    
-    if use_numba and NUMBA_AVAILABLE and np is not None:
-        try:
-            data_arr = np.frombuffer(data, dtype=np.uint8)
-            if isinstance(CRC_TABLE, np.ndarray):
-                # Use safe conversion to prevent overflow errors
-                encrypted_data, _, _, _ = _zipcrypto_encrypt_numba(
-                    data_arr, _safe_uint32(k0), _safe_uint32(k1), _safe_uint32(k2), CRC_TABLE
-                )
-                encrypted_data = encrypted_data.tobytes()
-            else:
-                encrypted_data, _, _, _ = _zipcrypto_encrypt_python(
-                    data, int(k0), int(k1), int(k2)
-                )
-        except (OverflowError, ValueError, TypeError):
-            # Fallback to Python implementation if numba encryption fails
-            encrypted_data, _, _, _ = _zipcrypto_encrypt_python(data, int(k0), int(k1), int(k2))
-    
-    if encrypted_data is None:
-        encrypted_data, _, _, _ = _zipcrypto_encrypt_python(data, int(k0), int(k1), int(k2))
-    
-    # Combine encrypted header + encrypted data
     return encrypted_header + encrypted_data
 
 
@@ -781,12 +777,17 @@ ZipFile = EncryptedZipWriter
 # Set availability flag (Numba-accelerated encryption is now integrated)
 FAST_ZIPCRYPTO_AVAILABLE = NUMBA_AVAILABLE
 
-# Constants
-INPUT_FILE_FORMAT = ".png"
-EXIT_DELAY_SECONDS = 10
-XOR_KEY = 0x3FA43FA4
-# Pattern: _0X or _0x followed by hex digits, must end at end of filename (before extension)
-ID_PATTERN = re.compile(r'_0[xX]([0-9A-Fa-f]+)$')
+# ============================================================================
+# Hardcoded Implementation Constants (Not user-configurable)
+# ============================================================================
+
+# ZipCrypto algorithm constants
+KEY0_INIT = 0x12345678
+KEY1_INIT = 0x23456789
+KEY2_INIT = 0x34567890
+LCG_MULTIPLIER = 134775813
+CRC32_POLY = 0xEDB88320
+
 # ZipCrypto password: 42-byte hardcoded password from TexMod specification
 ZIPCRYPTO_PASSWORD = bytes([
     0x73, 0x2A, 0x63, 0x7D, 0x5F, 0x0A, 0xA6, 0xBD, 0x7D, 0x65,
@@ -796,11 +797,11 @@ ZIPCRYPTO_PASSWORD = bytes([
     0x46, 0x6F
 ])
 
-# DDS Compression Constants
-AUTO_COMPRESS_ENABLED = False  # Default compression setting
-GENERATE_MIPMAPS = True  # Whether to generate mipmaps
-MIPMAP_FILTER = "box"  # Mipmap generation filter (box, triangle, lanczos)
-ALPHA_VARIANCE_THRESHOLD = 0.001  # Threshold for alpha channel variance (below this = uniform, use DXT1)
+# XOR obfuscation key
+XOR_KEY = 0x3FA43FA4
+
+# Pattern: _0X or _0x followed by hex digits, must end at end of filename (before extension)
+ID_PATTERN = re.compile(r'_0[xX]([0-9A-Fa-f]+)$')
 
 
 # ============================================================================
@@ -833,7 +834,7 @@ def is_valid_texture_directory(directory: Path) -> bool:
             for entry in it:
                 if entry.is_file():
                     path = Path(entry)
-                    if path.suffix.lower() == INPUT_FILE_FORMAT.lower():
+                    if path.suffix.lower() in INPUT_FORMATS:
                         id_value = extract_id_from_filename(path)
                         if id_value:
                             return True
@@ -863,9 +864,9 @@ def validate_texture_file(path: Path) -> bool:
     if not os.access(path, os.R_OK):
         return False
     
-    # Accept both PNG and DDS files
+    # Accept input formats and DDS files
     suffix_lower = path.suffix.lower()
-    if suffix_lower not in (INPUT_FILE_FORMAT.lower(), '.dds'):
+    if suffix_lower not in INPUT_FORMATS and suffix_lower != '.dds':
         return False
     
     return True
@@ -1060,11 +1061,211 @@ def prompt_auto_compress() -> bool:
 # DDS Compression Functions
 # ============================================================================
 
+def _calculate_channel_variance(channel_data: np.ndarray) -> float:
+    """Calculate variance of a channel to determine if it contains meaningful data."""
+    if channel_data.size == 0:
+        return 0.0
+    return float(np.var(channel_data))
+
+
+def _calculate_channel_statistics(channels) -> List[dict]:
+    """Calculate mean and variance statistics for RGB channels."""
+    stats = []
+    for i, channel in enumerate(channels[:3]):  # Only RGB, ignore alpha if present
+        channel_array = np.array(channel, dtype=np.float32)
+        mean = float(np.mean(channel_array))
+        variance = float(np.var(channel_array))
+        stats.append({'channel': i, 'mean': mean, 'variance': variance})
+    return stats
+
+
+def _check_outlier_pattern(stats: List[dict]) -> bool:
+    """Check if channel statistics show normal map pattern (outlier + two similar channels)."""
+    if len(stats) < 3:
+        return False
+    
+    stats_sorted = sorted(stats, key=lambda x: x['variance'])
+    outlier = stats_sorted[0]
+    other_two = stats_sorted[1:]
+    
+    outlier_variance = outlier['variance']
+    other_variances = [s['variance'] for s in other_two]
+    
+    if outlier_variance == 0:
+        return False
+    
+    variance_ratio_1 = other_variances[0] / outlier_variance if outlier_variance > 0 else float('inf')
+    variance_ratio_2 = other_variances[1] / outlier_variance if outlier_variance > 0 else float('inf')
+    
+    if variance_ratio_1 < 3.0 or variance_ratio_2 < 3.0:
+        return False
+    
+    mean_diff = abs(other_two[0]['mean'] - other_two[1]['mean'])
+    variance_diff = abs(other_two[0]['variance'] - other_two[1]['variance'])
+    
+    mean_avg = (other_two[0]['mean'] + other_two[1]['mean']) / 2.0
+    variance_avg = (other_two[0]['variance'] + other_two[1]['variance']) / 2.0
+    
+    mean_similar = mean_avg == 0 or (mean_diff / mean_avg) < 0.2
+    variance_similar = variance_avg == 0 or (variance_diff / variance_avg) < 0.3
+    
+    return mean_similar and variance_similar
+
+
+def is_normal_map_rgb(image_input) -> bool:
+    """
+    Detect if texture is a normal map using relative RGB channel statistics.
+    
+    Normal maps typically have:
+    - 2 channels (R, G) with similar mean and variance
+    - 1 channel (B) that is an outlier with much lower variance than the other two
+    
+    Args:
+        image_input: Path to image file or PIL Image object
+        
+    Returns:
+        True if texture appears to be a normal map, False otherwise
+    """
+    try:
+        if isinstance(image_input, Path):
+            img = Image.open(image_input)
+            should_close = True
+        else:
+            img = image_input
+            should_close = False
+        
+        try:
+            img_rgb = img.convert('RGB')
+            channels = img_rgb.split()
+            stats = _calculate_channel_statistics(channels)
+            return _check_outlier_pattern(stats)
+        finally:
+            if should_close:
+                img.close()
+    except Exception:
+        return False
+
+
+def _load_and_convert_image(image_input):
+    """Load image and convert to RGBA format, handling various input types."""
+    if isinstance(image_input, Path):
+        img = Image.open(image_input)
+        should_close = True
+        image_name = image_input.name
+    else:
+        img = image_input
+        should_close = False
+        image_name = getattr(image_input, 'filename', 'image')
+        if isinstance(image_name, Path):
+            image_name = image_name.name
+    
+    if img.mode not in ('RGBA', 'RGB', 'LA', 'L'):
+        if img.mode == 'P' and 'transparency' in img.info:
+            img = img.convert('RGBA')
+        elif img.mode == 'P':
+            img = img.convert('RGB')
+        else:
+            img = img.convert('RGBA')
+    
+    return img, should_close, image_name
+
+
+def _check_channel_variance(channels) -> Tuple[bool, bool, bool, bool]:
+    """Check which channels have meaningful variance."""
+    has_r = len(channels) >= 1
+    has_g = len(channels) >= 2
+    has_b = len(channels) >= 3
+    has_a = len(channels) >= 4
+    
+    r_variance = _calculate_channel_variance(np.array(channels[0], dtype=np.float32)) if has_r else 0.0
+    g_variance = _calculate_channel_variance(np.array(channels[1], dtype=np.float32)) if has_g else 0.0
+    b_variance = _calculate_channel_variance(np.array(channels[2], dtype=np.float32)) if has_b else 0.0
+    a_variance = _calculate_channel_variance(np.array(channels[3], dtype=np.float32)) if has_a else 0.0
+    
+    has_r = has_r and r_variance >= NORMAL_VARIANCE_THRESHOLD
+    has_g = has_g and g_variance >= NORMAL_VARIANCE_THRESHOLD
+    has_b = has_b and b_variance >= NORMAL_VARIANCE_THRESHOLD
+    has_a = has_a and a_variance >= CHANNEL_VARIANCE_THRESHOLD
+    
+    return has_r, has_g, has_b, has_a
+
+
+def analyze_texture_channels(image_input) -> Tuple[bool, bool, bool, bool]:
+    """
+    Analyze all channels of an image to determine which contain meaningful data.
+    
+    Args:
+        image_input: Path to image file or PIL Image object
+        
+    Returns:
+        Tuple of (has_r, has_g, has_b, has_a) boolean flags indicating channel usage
+    """
+    try:
+        img, should_close, image_name = _load_and_convert_image(image_input)
+        try:
+            channels = img.split()
+            return _check_channel_variance(channels)
+        finally:
+            if should_close:
+                img.close()
+    except Exception as e:
+        print(f"{Fore.YELLOW}Warning: Could not analyze channels for {image_name}: {e}{Style.RESET_ALL}")
+        return True, True, True, False
+
+
+def classify_texture_type(image_path: Path) -> str:
+    """
+    Classify texture type based on channel usage analysis and RGB statistical detection.
+    
+    Classification:
+    - "RGBA": Color map with alpha (all 4 channels used)
+    - "RGB Color": Color map without alpha (3 channels used, no alpha)
+    - "RGB Normal": Normal map (detected via RGB channel statistics - 2 similar, 1 outlier)
+    
+    Args:
+        image_path: Path to image file
+        
+    Returns:
+        Texture type classification string
+    """
+    # Load image once and reuse for both analyses
+    try:
+        with Image.open(image_path) as img:
+            # First check channel variance to see if alpha is used
+            has_r, has_g, has_b, has_a = analyze_texture_channels(img)
+            
+            # If alpha is not used, check if it's a normal map using RGB statistics
+            if not has_a:
+                if is_normal_map_rgb(img):
+                    return "RGB Normal"
+            
+            # Count active channels
+            active_channels = sum([has_r, has_g, has_b, has_a])
+            
+            if active_channels == 4:
+                # All 4 channels used - RGBA color map
+                return "RGBA"
+            elif active_channels == 3:
+                # 3 channels used - RGB color map (no alpha or alpha is uniform)
+                return "RGB Color"
+            elif active_channels == 2:
+                # Only 2 channels used - Normal map (fallback detection)
+                return "RGB Normal"
+            else:
+                # Fallback: assume RGB color if we can't determine
+                return "RGB Color"
+    except Exception:
+        # If we can't load the image, default to RGB Color
+        return "RGB Color"
+
+
 def has_alpha_channel(image_path: Path) -> bool:
     """
     Check if an image has an alpha channel with variance.
     If alpha channel exists but is uniform (all pixels have same value),
     returns False to use DXT1 compression instead of DXT5.
+    
+    Uses the generic channel variance function for consistency.
     
     Args:
         image_path: Path to image file
@@ -1072,45 +1273,8 @@ def has_alpha_channel(image_path: Path) -> bool:
     Returns:
         True if image has alpha channel with variance, False otherwise
     """
-    try:
-        with Image.open(image_path) as img:
-            # Convert to RGBA if needed to access alpha channel
-            if img.mode not in ('RGBA', 'LA'):
-                # Check for transparency info in palette mode
-                if img.mode == 'P' and 'transparency' in img.info:
-                    # Convert to RGBA to check alpha variance
-                    img = img.convert('RGBA')
-                else:
-                    return False
-            
-            # Extract alpha channel
-            if img.mode == 'RGBA':
-                alpha_channel = img.split()[3]  # Get alpha channel
-            elif img.mode == 'LA':
-                alpha_channel = img.split()[1]  # Get alpha channel
-            else:
-                return False
-            
-            # Convert alpha channel to numpy array and calculate variance
-            alpha_array = np.array(alpha_channel, dtype=np.float32)
-            
-            # Check if array is empty
-            if alpha_array.size == 0:
-                return False
-            
-            # Calculate variance
-            variance = np.var(alpha_array)
-            
-            # If variance is below threshold, treat as uniform (no meaningful alpha)
-            if variance < ALPHA_VARIANCE_THRESHOLD:
-                return False
-            
-            # Alpha channel has meaningful variance
-            return True
-            
-    except Exception as e:
-        print(f"{Fore.YELLOW}Warning: Could not check alpha channel for {image_path.name}: {e}{Style.RESET_ALL}")
-        return False
+    _, _, _, has_a = analyze_texture_channels(image_path)
+    return has_a
 
 
 def convert_png_to_dds(png_path: Path, dds_path: Path, has_alpha: bool) -> Path:
@@ -1170,12 +1334,153 @@ def convert_png_to_dds(png_path: Path, dds_path: Path, has_alpha: bool) -> Path:
         )
 
 
-def compress_textures_to_dds(texture_dict: Dict[str, Path], output_dir: Path, enable_compression: bool) -> Tuple[Dict[str, Path], List[Path], dict]:
+def classify_all_textures(texture_dict: Dict[str, Path]) -> Dict[str, str]:
+    """
+    Classify all textures in the dictionary by analyzing their channels.
+    
+    Args:
+        texture_dict: Dictionary mapping hash IDs to texture file paths
+        
+    Returns:
+        Dictionary mapping hash IDs to texture type classifications
+    """
+    classifications: Dict[str, str] = {}
+    total = len(texture_dict)
+    
+    print(f"\n{Fore.CYAN}[Analyzing] Classifying texture types...{Style.RESET_ALL}")
+    
+    for idx, (hash_str, texture_path) in enumerate(texture_dict.items(), 1):
+        if total > 10:
+            _show_progress(idx, total, texture_path.name, "Classifying")
+        texture_type = classify_texture_type(texture_path)
+        classifications[hash_str] = texture_type
+    
+    # Clear progress line if shown
+    if total > 10:
+        print('\r' + ' ' * 100 + '\r', end='', flush=True)
+    
+    return classifications
+
+
+def get_texture_dimensions(texture_path: Path) -> Tuple[int, int]:
+    """
+    Get texture dimensions (width, height) from image file.
+    
+    Args:
+        texture_path: Path to texture file
+        
+    Returns:
+        Tuple of (width, height) or (0, 0) if unable to read
+    """
+    try:
+        with Image.open(texture_path) as img:
+            return img.size  # Returns (width, height)
+    except Exception:
+        return (0, 0)
+
+
+def display_texture_classification(texture_dict: Dict[str, Path], classifications: Dict[str, str]) -> None:
+    """
+    Display texture classification results with statistics and dimensions.
+    
+    Args:
+        texture_dict: Dictionary mapping hash IDs to texture file paths
+        classifications: Dictionary mapping hash IDs to texture type classifications
+    """
+    print(f"\n{Fore.CYAN}{'='*80}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Texture Classification Results{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}{'='*80}{Style.RESET_ALL}")
+    
+    # Count classifications
+    rgba_count = sum(1 for t in classifications.values() if t == "RGBA")
+    rgb_color_count = sum(1 for t in classifications.values() if t == "RGB Color")
+    rgb_normal_count = sum(1 for t in classifications.values() if t == "RGB Normal")
+    
+    # Calculate file size statistics
+    total_size_bytes = 0
+    file_sizes = []
+    for texture_path in texture_dict.values():
+        try:
+            size_bytes = texture_path.stat().st_size
+            total_size_bytes += size_bytes
+            file_sizes.append(size_bytes)
+        except (OSError, PermissionError):
+            pass
+    
+    total_size_mb = total_size_bytes / (1024 * 1024)
+    avg_size_mb = (total_size_mb / len(file_sizes)) if file_sizes else 0
+    
+    # Show detailed list if not too many
+    if len(classifications) <= 20:
+        print(f"\n{Fore.YELLOW}Detailed Classification:{Style.RESET_ALL}")
+        print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+        
+        # Print column headers
+        print(f"{Fore.CYAN}{'ID':<17} | {'Type':<13} | {'Size (width x height)':<22} | {'File Size':<12} | {'Filename'}{Style.RESET_ALL}")
+        print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+        
+        # Print each texture with dimensions
+        for hash_str, texture_path in texture_dict.items():
+            texture_type = classifications.get(hash_str, "Unknown")
+            type_color = Fore.GREEN if texture_type == "RGBA" else (Fore.BLUE if texture_type == "RGB Color" else Fore.MAGENTA)
+            
+            # Get dimensions - numbers in light blue, parentheses and x in white
+            width, height = get_texture_dimensions(texture_path)
+            if width > 0 and height > 0:
+                dim_str = f"{Fore.WHITE}({Fore.CYAN}{width}{Fore.WHITE}x{Fore.CYAN}{height}{Fore.WHITE}){Style.RESET_ALL}"
+            else:
+                dim_str = "N/A"
+            
+            # Get file size in MB
+            try:
+                file_size_bytes = texture_path.stat().st_size
+                file_size_mb = file_size_bytes / (1024 * 1024)
+                size_str = f"{Fore.WHITE}{file_size_mb:.1f} MB{Style.RESET_ALL}"
+            except (OSError, PermissionError):
+                size_str = "N/A"
+            
+            print(f"{Fore.CYAN}{hash_str:<17}{Style.RESET_ALL} | {type_color}{texture_type:<13}{Style.RESET_ALL} | {dim_str:<22} | {size_str:<12} | {texture_path.name}")
+        
+        print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+    
+    # Print summary below the table
+    print(f"\n{Fore.CYAN}Classification Summary:{Style.RESET_ALL}")
+    print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}{'Type':<25} | {'Count':<10} | {'Total Size':<15} | {'Avg Size':<15}{Style.RESET_ALL}")
+    print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+    
+    # Calculate sizes per type
+    rgba_size = sum(texture_path.stat().st_size for hash_str, texture_path in texture_dict.items() 
+                    if classifications.get(hash_str) == "RGBA" and texture_path.exists())
+    rgb_color_size = sum(texture_path.stat().st_size for hash_str, texture_path in texture_dict.items() 
+                         if classifications.get(hash_str) == "RGB Color" and texture_path.exists())
+    rgb_normal_size = sum(texture_path.stat().st_size for hash_str, texture_path in texture_dict.items() 
+                          if classifications.get(hash_str) == "RGB Normal" and texture_path.exists())
+    
+    rgba_size_mb = rgba_size / (1024 * 1024)
+    rgb_color_size_mb = rgb_color_size / (1024 * 1024)
+    rgb_normal_size_mb = rgb_normal_size / (1024 * 1024)
+    
+    rgba_avg = (rgba_size_mb / rgba_count) if rgba_count > 0 else 0
+    rgb_color_avg = (rgb_color_size_mb / rgb_color_count) if rgb_color_count > 0 else 0
+    rgb_normal_avg = (rgb_normal_size_mb / rgb_normal_count) if rgb_normal_count > 0 else 0
+    
+    print(f"{Fore.GREEN}{'RGBA (Color + Alpha)':<25}{Style.RESET_ALL} | {Fore.WHITE}{rgba_count:<10}{Style.RESET_ALL} | {Fore.WHITE}{rgba_size_mb:>13.1f} MB{Style.RESET_ALL} | {Fore.WHITE}{rgba_avg:>13.1f} MB{Style.RESET_ALL}")
+    print(f"{Fore.BLUE}{'RGB Color (no alpha)':<25}{Style.RESET_ALL} | {Fore.WHITE}{rgb_color_count:<10}{Style.RESET_ALL} | {Fore.WHITE}{rgb_color_size_mb:>13.1f} MB{Style.RESET_ALL} | {Fore.WHITE}{rgb_color_avg:>13.1f} MB{Style.RESET_ALL}")
+    print(f"{Fore.MAGENTA}{'RGB Normal (2 channels)':<25}{Style.RESET_ALL} | {Fore.WHITE}{rgb_normal_count:<10}{Style.RESET_ALL} | {Fore.WHITE}{rgb_normal_size_mb:>13.1f} MB{Style.RESET_ALL} | {Fore.WHITE}{rgb_normal_avg:>13.1f} MB{Style.RESET_ALL}")
+    print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}{'Total textures':<25}{Style.RESET_ALL} | {Fore.WHITE}{len(classifications):<10}{Style.RESET_ALL} | {Fore.WHITE}{total_size_mb:>13.1f} MB{Style.RESET_ALL} | {Fore.WHITE}{avg_size_mb:>13.1f} MB{Style.RESET_ALL}")
+    print(f"{Fore.WHITE}{'-'*80}{Style.RESET_ALL}")
+
+
+def compress_textures_to_dds(texture_dict: Dict[str, Path], classifications: Dict[str, str], output_dir: Path, enable_compression: bool) -> Tuple[Dict[str, Path], List[Path], dict]:
     """
     Compress textures to DDS format if compression is enabled.
+    Uses texture classification to determine compression format.
     
     Args:
         texture_dict: Dictionary mapping hash IDs to PNG file paths
+        classifications: Dictionary mapping hash IDs to texture type classifications
         output_dir: Directory where temporary DDS files should be created
         enable_compression: Whether to enable compression
         
@@ -1200,14 +1505,17 @@ def compress_textures_to_dds(texture_dict: Dict[str, Path], output_dir: Path, en
     
     for idx, (hash_str, png_path) in enumerate(texture_dict.items(), 1):
         try:
-            # Check for alpha channel
-            has_alpha = has_alpha_channel(png_path)
+            # Get texture classification
+            texture_type = classifications.get(hash_str, "RGB Color")
             
-            # Determine compression format for display
+            # Determine compression format based on classification
+            # RGBA and RGB Normal use DXT5, RGB Color (non-normal, no alpha) uses DXT1
+            has_alpha = (texture_type == "RGBA" or texture_type == "RGB Normal")
             compression_format = "DXT5" if has_alpha else "DXT1"
             
-            # Show progress bar with format type (always show, not just for >10 items)
-            show_compression_progress(idx, total, png_path.name, compression_format)
+            # Show progress bar with format type and texture type
+            format_text = f"{compression_format} ({texture_type})"
+            _show_progress(idx, total, png_path.name, "Compressing", format_type=format_text, use_bar=True)
             
             # Create DDS filename (replace .png with .dds)
             dds_filename = png_path.stem + '.dds'
@@ -1235,7 +1543,7 @@ def compress_textures_to_dds(texture_dict: Dict[str, Path], output_dir: Path, en
             # Fall back to original PNG file
             updated_dict[hash_str] = png_path
             # Show progress again after error
-            show_compression_progress(idx, total, png_path.name, "Failed")
+            _show_progress(idx, total, png_path.name, "Compressing", format_type="Failed", use_bar=True)
     
     # Clear progress line
     print('\r' + ' ' * 100 + '\r', end='', flush=True)
@@ -1355,7 +1663,7 @@ def scan_directory_for_textures(directory: Path) -> Dict[str, Path]:
             for entry in it:
                 if entry.is_file():
                     path = Path(entry)
-                    if path.suffix.lower() == INPUT_FILE_FORMAT.lower():
+                    if path.suffix.lower() in INPUT_FORMATS:
                         all_files.append(path)
     except (PermissionError, OSError) as e:
         print(f"{Fore.RED}Error scanning directory: {e}{Style.RESET_ALL}")
@@ -1368,7 +1676,7 @@ def scan_directory_for_textures(directory: Path) -> Dict[str, Path]:
     
     # Second pass: process files with progress indication
     for idx, path in enumerate(all_files, 1):
-        show_progress(idx, total_files, path.name, "Scanning")
+        _show_progress(idx, total_files, path.name, "Scanning")
         
         id_value = extract_id_from_filename(path)
         if id_value:
@@ -1419,7 +1727,7 @@ def validate_texture_files(texture_dict: Dict[str, Path]) -> Tuple[Dict[str, Pat
         
         # Show progress for operations with more than 10 items
         if total > 10:
-            show_validation_progress(idx, total, texture_path.name, status)
+            _show_progress(idx, total, texture_path.name, "Validating", status=status, use_bar=True)
     
     # Clear progress line if shown
     if total > 10:
@@ -1500,7 +1808,7 @@ def create_zip_archive(texture_dict: Dict[str, Path], texmod_def: str, password:
         for idx, (_, texture_path) in enumerate(texture_dict.items(), 1):
             # Show progress for operations with more than 10 items
             if total > 10:
-                show_zip_progress(idx, total + 1, texture_path.name)  # +1 for texmod.def
+                _show_progress(idx, total + 1, texture_path.name, "Adding", use_bar=True)  # +1 for texmod.def
             
             try:
                 # Read file and add to ZIP with filename only (flat structure)
@@ -1599,91 +1907,48 @@ def calculate_total_file_size(texture_dict: Dict[str, Path]) -> int:
     return total_size
 
 
-def show_progress(current: int, total: int, filename: str, operation: str) -> None:
+def _show_progress(current: int, total: int, filename: str, operation: str, 
+                   status: str = None, format_type: str = None, use_bar: bool = False) -> None:
     """
-    Display progress indicator during file operations.
+    Unified progress display function.
     
     Args:
         current: Current file number
         total: Total number of files
         filename: Name of file being processed
-        operation: Operation name (e.g., "Scanning", "Validating")
+        operation: Operation name (e.g., "Scanning", "Validating", "Compressing", "Adding")
+        status: Optional status string (e.g., "Found", "Missing")
+        format_type: Optional format type string (e.g., "DXT5 (RGBA)")
+        use_bar: Whether to show progress bar (default: False for simple progress)
     """
-    progress_text = f"{Fore.CYAN}[{current}/{total}] {operation}: {filename}{Style.RESET_ALL}"
+    if use_bar:
+        percentage = int((current / total) * 100) if total > 0 else 0
+        bar_length = 30
+        filled = int(bar_length * current / total) if total > 0 else 0
+        bar = '█' * filled + '░' * (bar_length - filled)
+        
+        # Build operation text
+        if status:
+            status_color = Fore.GREEN if status == "Found" else Fore.YELLOW
+            op_text = f"{status_color}{status}{Style.RESET_ALL}"
+        elif format_type:
+            op_text = f"{Fore.CYAN}{operation} {format_type}{Style.RESET_ALL}"
+        else:
+            op_text = f"{Fore.CYAN}{operation}{Style.RESET_ALL}"
+        
+        # Determine filename length based on context
+        max_filename_len = 35 if format_type else 40
+        
+        progress_text = (
+            f"\r{Fore.CYAN}[{current}/{total}]{Style.RESET_ALL} "
+            f"{op_text} | "
+            f"{Fore.CYAN}{bar}{Style.RESET_ALL} {percentage}% | "
+            f"{filename[:max_filename_len]}"
+        )
+    else:
+        progress_text = f"{Fore.CYAN}[{current}/{total}] {operation}: {filename}{Style.RESET_ALL}"
+    
     print(f'\r{progress_text}', end='', flush=True)
-
-
-def show_validation_progress(current: int, total: int, filename: str, status: str) -> None:
-    """
-    Display progress indicator during texture validation with progress bar.
-    
-    Args:
-        current: Current file number
-        total: Total number of files
-        filename: Name of file being checked
-        status: Status string (Found/Missing)
-    """
-    percentage = int((current / total) * 100) if total > 0 else 0
-    bar_length = 30
-    filled = int(bar_length * current / total) if total > 0 else 0
-    bar = '█' * filled + '░' * (bar_length - filled)
-    
-    status_color = Fore.GREEN if status == "Found" else Fore.YELLOW
-    progress_text = (
-        f"\r{Fore.CYAN}[{current}/{total}]{Style.RESET_ALL} "
-        f"{status_color}{status}{Style.RESET_ALL} | "
-        f"{Fore.CYAN}{bar}{Style.RESET_ALL} {percentage}% | "
-        f"{filename[:40]}"
-    )
-    print(progress_text, end='', flush=True)
-
-
-def show_compression_progress(current: int, total: int, filename: str, format_type: str = "") -> None:
-    """
-    Display progress indicator during DDS compression with progress bar.
-    
-    Args:
-        current: Current file number
-        total: Total number of files
-        filename: Name of file being compressed
-        format_type: Compression format (DXT1/DXT5) or empty string
-    """
-    percentage = int((current / total) * 100) if total > 0 else 0
-    bar_length = 30
-    filled = int(bar_length * current / total) if total > 0 else 0
-    bar = '█' * filled + '░' * (bar_length - filled)
-    
-    format_text = f" ({format_type})" if format_type else ""
-    progress_text = (
-        f"\r{Fore.CYAN}[{current}/{total}]{Style.RESET_ALL} "
-        f"{Fore.CYAN}Compressing{Style.RESET_ALL}{format_text} | "
-        f"{Fore.CYAN}{bar}{Style.RESET_ALL} {percentage}% | "
-        f"{filename[:40]}"
-    )
-    print(progress_text, end='', flush=True)
-
-
-def show_zip_progress(current: int, total: int, filename: str) -> None:
-    """
-    Display progress indicator during ZIP creation with progress bar.
-    
-    Args:
-        current: Current file number
-        total: Total number of files
-        filename: Name of file being added
-    """
-    percentage = int((current / total) * 100) if total > 0 else 0
-    bar_length = 30
-    filled = int(bar_length * current / total) if total > 0 else 0
-    bar = '█' * filled + '░' * (bar_length - filled)
-    
-    progress_text = (
-        f"\r{Fore.CYAN}[{current}/{total}]{Style.RESET_ALL} "
-        f"{Fore.CYAN}Adding{Style.RESET_ALL} | "
-        f"{Fore.CYAN}{bar}{Style.RESET_ALL} {percentage}% | "
-        f"{filename[:40]}"
-    )
-    print(progress_text, end='', flush=True)
 
 
 def display_scan_summary(texture_dict: Dict[str, Path], directory: Path) -> None:
@@ -1789,62 +2054,85 @@ def display_build_summary(stats: dict, tpf_path: Path, build_time: float, compre
         print(f"\n{Fore.GREEN}All textures found and included successfully!{Style.RESET_ALL}")
 
 
-def interactive_countdown(duration: int) -> None:
-    """
-    Interactive countdown with pause/resume functionality.
-    
-    Press SPACE to pause/unpause, any other key to exit immediately.
-    
-    Args:
-        duration: Countdown duration in seconds
-    """
-    if msvcrt is None:
-        print(f"\n{Fore.YELLOW}Keyboard input not available on this platform.{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}Closing in {duration} seconds...{Style.RESET_ALL}")
-        time.sleep(duration)
-        return
-    
-    remaining = duration
-    paused = False
-    start_time = time.time()
-    
-    print(f"\n{Fore.YELLOW}Press SPACE to pause/unpause, or any other key to exit immediately.{Style.RESET_ALL}")
-    print(f"{Fore.CYAN}Closing in {remaining} seconds...{Style.RESET_ALL}", end='', flush=True)
-    
-    while remaining > 0:
-        if msvcrt.kbhit():
-            key = msvcrt.getch()
-            if key == b' ':  # Space key
-                paused = not paused
-                if paused:
-                    print(f"\r{Fore.YELLOW}PAUSED - Press SPACE to resume, or any other key to exit.{Style.RESET_ALL}", 
-                          end='', flush=True)
-                else:
-                    start_time = time.time() - (duration - remaining)  # Adjust start time
-                    print(f"\r{Fore.CYAN}Closing in {remaining} seconds...{Style.RESET_ALL}", 
-                          end='', flush=True)
-            else:  # Any other key
-                print(f"\r{Fore.YELLOW}Exiting immediately...{Style.RESET_ALL}")
-                return
-        
-        if not paused:
-            elapsed = time.time() - start_time
-            new_remaining = max(0, duration - int(elapsed))
-            
-            if new_remaining != remaining:
-                remaining = new_remaining
-                if remaining > 0:
-                    print(f"\r{Fore.CYAN}Closing in {remaining} seconds...{Style.RESET_ALL}", 
-                          end='', flush=True)
-        
-        time.sleep(0.1)
-    
-    print(f"\r{Fore.GREEN}Closing now...{Style.RESET_ALL}")
-
-
 # ============================================================================
 # Main Function
 # ============================================================================
+
+def _resolve_and_validate_directory(script_dir: Path) -> Optional[Path]:
+    """Resolve and validate texture directory."""
+    texture_dir = resolve_texture_directory(script_dir)
+    
+    is_valid, error_msg = is_valid_target_directory(texture_dir)
+    if not is_valid:
+        print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Cannot write TPF file to this directory.{Style.RESET_ALL}")
+        return None
+    
+    if error_msg and "Warning" in error_msg:
+        print(f"{Fore.YELLOW}{error_msg}{Style.RESET_ALL}")
+    
+    return texture_dir
+
+
+def _scan_and_validate_textures(texture_dir: Path) -> Tuple[Optional[Dict[str, Path]], Optional[dict]]:
+    """Scan directory and validate texture files."""
+    print(f"\n{Fore.CYAN}[Scanning] Processing texture files in: {texture_dir}{Style.RESET_ALL}")
+    texture_dict = scan_directory_for_textures(texture_dir)
+    
+    if not texture_dict:
+        print(f"{Fore.RED}No valid texture files found in directory.{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Expected PNG files matching pattern: *_0X*.png{Style.RESET_ALL}")
+        return None, None
+    
+    display_scan_summary(texture_dict, texture_dir)
+    
+    valid_dict, missing_dict, stats = validate_texture_files(texture_dict)
+    
+    if not valid_dict:
+        print(f"{Fore.RED}No valid texture files found. Cannot create TPF.{Style.RESET_ALL}")
+        return None, None
+    
+    return valid_dict, stats
+
+
+def _classify_and_compress_textures(valid_dict: Dict[str, Path], texture_dir: Path) -> Tuple[Dict[str, Path], List[Path], Optional[dict], Optional[int], Optional[int]]:
+    """Classify textures and compress if requested."""
+    classifications = classify_all_textures(valid_dict)
+    display_texture_classification(valid_dict, classifications)
+    
+    enable_compression = prompt_auto_compress()
+    original_file_size = calculate_total_file_size(valid_dict)
+    
+    dds_cleanup_list = []
+    compression_stats = None
+    compressed_file_size = None
+    
+    if enable_compression:
+        valid_dict, dds_cleanup_list, compression_stats = compress_textures_to_dds(
+            valid_dict, classifications, texture_dir, enable_compression
+        )
+        if compression_stats.get('compressed_total_size'):
+            compressed_file_size = compression_stats['compressed_total_size']
+            original_mb = original_file_size / (1024 * 1024)
+            compressed_mb = compressed_file_size / (1024 * 1024)
+            print(f"\n{Fore.CYAN}Original PNG files size: {Fore.CYAN}{original_mb:.2f} MB{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}Compressed texture files size: {Fore.CYAN}{compressed_mb:.2f} MB{Style.RESET_ALL}")
+    
+    return valid_dict, dds_cleanup_list, compression_stats, original_file_size, compressed_file_size
+
+
+def _build_tpf_file(valid_dict: Dict[str, Path], texture_dir: Path) -> Path:
+    """Build and write TPF file."""
+    texmod_def = generate_texmod_def(valid_dict)
+    zip_bytes = create_zip_archive(valid_dict, texmod_def, ZIPCRYPTO_PASSWORD)
+    tpf_bytes = apply_xor_obfuscation(zip_bytes)
+    
+    tpf_filename = f"{texture_dir.name}.tpf"
+    tpf_path = texture_dir / tpf_filename
+    write_tpf_file(tpf_bytes, tpf_path)
+    
+    return tpf_path
+
 
 def main() -> None:
     """Main execution function."""
@@ -1855,91 +2143,37 @@ def main() -> None:
     compressed_file_size: Optional[int] = None
     
     try:
-        # Step 1: Resolve texture directory (auto-detect or prompt)
-        texture_dir = resolve_texture_directory(script_dir)
-        
-        # Step 1.5: Prompt for auto-compression
-        enable_compression = prompt_auto_compress()
-        
-        # Step 2: Validate target directory is writable
-        is_valid, error_msg = is_valid_target_directory(texture_dir)
-        if not is_valid:
-            print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}Cannot write TPF file to this directory.{Style.RESET_ALL}")
-            return
-        if error_msg and "Warning" in error_msg:
-            print(f"{Fore.YELLOW}{error_msg}{Style.RESET_ALL}")
-        
-        # Step 3: Scan directory and build texture dictionary
-        print(f"\n{Fore.CYAN}[Scanning] Processing texture files in: {texture_dir}{Style.RESET_ALL}")
-        texture_dict = scan_directory_for_textures(texture_dir)
-        
-        if not texture_dict:
-            print(f"{Fore.RED}No valid texture files found in directory.{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}Expected PNG files matching pattern: *_0X*.png{Style.RESET_ALL}")
+        texture_dir = _resolve_and_validate_directory(script_dir)
+        if not texture_dir:
             return
         
-        # Step 4: Display scan summary
-        display_scan_summary(texture_dict, texture_dir)
-        
-        # Step 5: Validate texture files exist
-        valid_dict, missing_dict, stats = validate_texture_files(texture_dict)
-        
-        if not valid_dict:
-            print(f"{Fore.RED}No valid texture files found. Cannot create TPF.{Style.RESET_ALL}")
+        result = _scan_and_validate_textures(texture_dir)
+        if result[0] is None:
             return
+        valid_dict, stats = result
         
-        # Step 5.25: Calculate original PNG file size (for final summary)
-        original_file_size = calculate_total_file_size(valid_dict)
+        result = _classify_and_compress_textures(valid_dict, texture_dir)
+        valid_dict, dds_cleanup_list, compression_stats, original_file_size, compressed_file_size = result
         
-        # Step 5.5: Compress textures to DDS if enabled
-        if enable_compression:
-            valid_dict, dds_cleanup_list, compression_stats = compress_textures_to_dds(
-                valid_dict, texture_dir, enable_compression
-            )
-            # Display PNG vs compressed texture size comparison
-            if compression_stats.get('compressed_total_size'):
-                compressed_file_size = compression_stats['compressed_total_size']
-                original_mb = original_file_size / (1024 * 1024)
-                compressed_mb = compressed_file_size / (1024 * 1024)
-                print(f"\n{Fore.CYAN}Original PNG files size: {Fore.CYAN}{original_mb:.2f} MB{Style.RESET_ALL}")
-                print(f"{Fore.CYAN}Compressed texture files size: {Fore.CYAN}{compressed_mb:.2f} MB{Style.RESET_ALL}")
+        tpf_path = _build_tpf_file(valid_dict, texture_dir)
         
-        # Step 6: Generate texmod.def
-        texmod_def = generate_texmod_def(valid_dict)
-        
-        # Step 7: Create ZIP archive with ZipCrypto encryption
-        zip_bytes = create_zip_archive(valid_dict, texmod_def, ZIPCRYPTO_PASSWORD)
-        
-        # Step 8: Apply XOR obfuscation
-        tpf_bytes = apply_xor_obfuscation(zip_bytes)
-        
-        # Step 9: Write TPF file to texture directory
-        tpf_filename = f"{texture_dir.name}.tpf"
-        tpf_path = texture_dir / tpf_filename
-        write_tpf_file(tpf_bytes, tpf_path)
-        
-        # Step 9.5: Cleanup temporary DDS files after TPF creation
         if dds_cleanup_list:
             cleanup_temp_dds_files(dds_cleanup_list)
-            dds_cleanup_list = []  # Clear list after cleanup
+            dds_cleanup_list = []
         
-        # Step 10: Display build summary
         build_time = time.time() - start_time
         display_build_summary(stats, tpf_path, build_time, compression_stats, original_file_size, compressed_file_size)
         
-        # Step 12: Interactive countdown before exit
-        interactive_countdown(EXIT_DELAY_SECONDS)
+        input("\nPress Enter to exit...")
         
     except KeyboardInterrupt:
         print(f"\n{Fore.YELLOW}Operation cancelled by user.{Style.RESET_ALL}")
     except SystemExit:
-        raise  # Re-raise SystemExit to allow clean exit
+        raise
     except Exception as e:
         print(f"\n{Fore.RED}Error: {e}{Style.RESET_ALL}")
         raise
     finally:
-        # Ensure cleanup of temporary DDS files even on errors
         if dds_cleanup_list:
             cleanup_temp_dds_files(dds_cleanup_list)
 
