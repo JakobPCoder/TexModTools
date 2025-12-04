@@ -7,6 +7,8 @@ A collection of Python scripts and tools for creating texture mods and TPF files
 TexModTools provides a complete workflow for processing and packaging game textures into TPF files. The tools are based on the usage of OpenTexMod, allowing you to create texture replacement mods for classic DirectX 9 games.
 This script is faster than the original TexMod and creates files that should be compatible with both TexMod and OpenTexMod.
 
+I found OpenTexMod to be the most reliable in injecting tpf's into games. 
+As it lacks tooling for creating tpf's, made sure to include that functionality in here.
 We also include OpenTexMod files, because no reliable maintained download source was found.
 Our license does not apply to the OpenTexMod files.
 
