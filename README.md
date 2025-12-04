@@ -120,10 +120,13 @@ Separates alpha channels from PNG textures, creating separate alpha mask files w
 
 ### 3. `TexturesToTpf.py` - TPF Package Creator
 
-Automatically scans a directory for PNG texture files, extracts hexadecimal IDs from filenames, and creates a TPF (TexMod Package File) format archive.
+Automatically scans a directory for texture files  matchiingg the **filename pattern**, extracts hexadecimal IDs from filenames, and creates a TPF (TexMod Package File) format archive.
+
+**Filename Pattern:**
+Textures must follow the pattern: `*_0X[hexadecimal].ext` or `*_0x[hexadecimal].ext` where ext is png, jpg, jpeg, or bmp
 
 **Usage:**
-1. Place `TexturesToTpf.py` in a folder containing PNG textures with `*_0X[hex].png` naming pattern
+1. Place `TexturesToTpf.py` in a folder containing texture files following the **filename pattern**
 2. Run: `python TexturesToTpf.py` or double-click `Run_TexturesToTpf.bat`
 3. The script will:
    - Auto-detect the texture directory (or prompt for selection)
@@ -133,9 +136,6 @@ Automatically scans a directory for PNG texture files, extracts hexadecimal IDs 
    - Create encrypted ZIP archive with ZipCrypto
    - Apply XOR obfuscation
    - Output a `.tpf` file ready for use
-
-**Filename Pattern:**
-Textures must follow the pattern: `*_0X[hexadecimal].png` or `*_0x[hexadecimal].png`
 
 **Examples:**
 - `ACBSP_T_0X3263C677.png` ✓
@@ -162,7 +162,7 @@ Use **OpenTexMod** to extract `.dds` texture files from your game:
 2. Select Main -> Use Global hook
 3. Start your game
 4. Use the hotkeys from OpenTexMod to dump textures
-4. Textures are saved as `.dds` files
+4. Textures are saved as `.dds` files with filenames ending in `_0X[hexadecimal]` (the texture ID that must be preserved) 
 
 ### Step 2: Convert to PNG
 1. Place `1toPng.py` in the folder with extracted `.dds` files
@@ -170,7 +170,7 @@ Use **OpenTexMod** to extract `.dds` texture files from your game:
 3. All `.dds` files are converted to `.png` format
 
 ### Step 3: Edit Textures (Optional)
-Edit your textures using Photoshop, GIMP, or any image editor. **Important:** Keep the `_0X[hex].png` suffix intact from the underscore to the end of the filename!
+Edit your textures using Photoshop, GIMP, or any image editor. **Important:** Keep the `_0X[hex].ext` suffix intact from the underscore to the end of the filename!
 
 ### Step 4: Split Alpha Channels (Optional)
 If you need to edit alpha channels separately:
@@ -179,7 +179,7 @@ If you need to edit alpha channels separately:
 3. Alpha masks are saved as `*_a.png` files
 
 ### Step 5: Create TPF Package
-1. Ensure all textures follow the `*_0X[hex].png` naming pattern
+1. Ensure all textures follow the `*_0X[hex].ext` naming pattern
 2. Configure compression settings in `config.ini` (optional - defaults to enabled)
 3. Place `TexturesToTpf.py` in the texture folder (or run from anywhere)
 4. Run: `python TexturesToTpf.py` or double-click `Run_TexturesToTpf.bat`
