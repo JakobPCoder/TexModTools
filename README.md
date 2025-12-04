@@ -38,8 +38,15 @@ pip install -r requirements.txt
 **Package Details:**
 - `Pillow` - Image processing for alpha channel detection
 - `numpy` - Numerical operations for alpha variance calculation
-- `zipencrypt` - ZipCrypto encryption library (required for TPF format)
+- `zipencrypt` - ZipCrypto encryption library (fallback for TPF format encryption)
+- `numba` - **Recommended** - High-performance JIT compiler for optimized ZipCrypto encryption (significantly faster than zipencrypt fallback)
 - `colorama` - Colored terminal output (optional, falls back gracefully if not installed)
+
+**Zip Encryption Performance:**
+- **With numba:** The script uses a Numba-optimized ZipCrypto implementation for significantly faster TPF file creation
+- **Without numba:** The script automatically falls back to `zipencrypt` library (works correctly but slower)
+- The script will display a warning if numba is not installed, but execution continues normally with the fallback
+- **Recommendation:** Install numba for better performance: `pip install numba`
 
 **Note:** For the optional DDS compression feature in `TexturesToTpf.py`, ImageMagick must be installed separately on your system (download from [ImageMagick's official website](https://imagemagick.org/script/download.php)) and the `magick` command must be in your system PATH.
 
@@ -166,7 +173,7 @@ The TPF (TexMod Package File) format is a specialized archive format:
 - **Encryption:** Legacy ZipCrypto with hardcoded password
 - **Contents:** `texmod.def` definition file + texture images
 
-The `TexturesToTpf.py` script handles all format requirements automatically, ensuring compatibility with both TexMod and OpenTexMod. The ZipCrypto encryption uses the `zipencrypt` library for reliable TPF format compliance.
+The `TexturesToTpf.py` script handles all format requirements automatically, ensuring compatibility with both TexMod and OpenTexMod. The ZipCrypto encryption uses a Numba-optimized implementation when available (recommended for performance), or automatically falls back to the `zipencrypt` library if numba is not installed.
 
 ### Texture ID Format
 Texture IDs are extracted from filenames using the pattern `_0X[hex]` or `_0x[hex]` at the end of the filename (before the extension). These IDs correspond to CRC32 hashes computed by TexMod/OpenTexMod during texture extraction.
@@ -189,9 +196,10 @@ If `TexturesToTpf.py` fails during DDS compression with 'magick' errors:
 ## Updates
 
 ### Version 0.5
-- **Reliability Improvement:** Replaced custom ZipCrypto implementation with proven `zipencrypt` library for better compatibility
-- Uses `zipencrypt` library for reliable TPF format compliance with OpenTexMod
-- Removed Numba dependency (no longer required)
+- **Performance Enhancement:** Added Numba-optimized ZipCrypto implementation for significantly faster TPF file creation
+- **Automatic Fallback:** Script automatically uses `zipencrypt` library if numba is not installed (works correctly but slower)
+- **User-Friendly Warnings:** Script displays helpful warnings and installation advice when numba is missing, without halting execution
+- Both implementations provide reliable TPF format compliance with OpenTexMod
 
 ### Version 0.4
 - Enhanced `TexturesToTpf.py` with optional DDS compression for smaller TPF files

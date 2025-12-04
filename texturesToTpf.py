@@ -15,9 +15,10 @@ import time
 import struct
 import shutil
 import configparser
+import zlib
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
-from zipfile import ZIP_DEFLATED, ZIP_STORED
+from zipfile import ZIP_DEFLATED
 
 try:
     import msvcrt
@@ -38,7 +39,8 @@ def load_config() -> Dict:
         'input_formats': ['.png', '.jpg', '.jpeg', '.bmp'],
         'generate_mipmaps': True,
         'channel_variance_threshold': 0.001,
-        'normal_variance_threshold': 0.01
+        'normal_variance_threshold': 0.01,
+        'enable_compression': True
     }
     
     # Get the directory where this script is located
@@ -80,6 +82,8 @@ def load_config() -> Dict:
                 result['channel_variance_threshold'] = config.getfloat('DDS', 'channel_variance_threshold')
             if config.has_option('DDS', 'normal_variance_threshold'):
                 result['normal_variance_threshold'] = config.getfloat('DDS', 'normal_variance_threshold')
+            if config.has_option('DDS', 'enable_compression'):
+                result['enable_compression'] = config.getboolean('DDS', 'enable_compression')
         
         return result
         
@@ -101,6 +105,7 @@ INPUT_FORMATS = _config['input_formats']
 GENERATE_MIPMAPS = _config['generate_mipmaps']
 CHANNEL_VARIANCE_THRESHOLD = _config['channel_variance_threshold']  # Threshold for alpha channel variance (below this = uniform/unused)
 NORMAL_VARIANCE_THRESHOLD = _config['normal_variance_threshold']  # Threshold for normal map channel detection (10x higher, below this = unused channel)
+ENABLE_COMPRESSION = _config['enable_compression']  # Whether to compress textures to DDS format
 
 # ============================================================================
 # Dependency Checking and Installation
@@ -294,14 +299,30 @@ except ImportError:
     input("\nPress Enter to exit...")
     sys.exit(1)
 
-# Import zipencrypt for ZipCrypto encryption (required for TPF format)
+# Try to use Numba-optimized ZipCrypto, fallback to zipencrypt if Numba unavailable
+NUMBA_AVAILABLE = False
 try:
-    from zipencrypt import ZipFile, ZIP_DEFLATED
+    from numba import jit  # noqa: F401
+    NUMBA_AVAILABLE = True
 except ImportError:
-    raise ImportError(
-        "zipencrypt package is required for ZipCrypto encryption. "
-        "Install it with: pip install zipencrypt"
-    )
+    NUMBA_AVAILABLE = False
+
+if NUMBA_AVAILABLE:
+    # We'll define NumbaZipFile class below, set ZipFile to it
+    ZipFile = None  # Will be set after class definition
+else:
+    # Fallback to zipencrypt
+    try:
+        from zipencrypt import ZipFile, ZIP_DEFLATED
+        # Print warning about numba not being available (non-blocking)
+        print(f"{Fore.YELLOW}[Warning] Numba is not installed. Using zipencrypt fallback.{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}[Info] For better performance, consider installing numba: pip install numba{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}[Info] The script will continue using zipencrypt, which works but is slower.{Style.RESET_ALL}\n")
+    except ImportError:
+        raise ImportError(
+            "Either numba or zipencrypt package is required for ZipCrypto encryption. "
+            "Install with: pip install numba (preferred) or pip install zipencrypt"
+        )
 
 # ============================================================================
 # Hardcoded Implementation Constants (Not user-configurable)
@@ -328,6 +349,328 @@ XOR_KEY = 0x3FA43FA4
 
 # Pattern: _0X or _0x followed by hex digits, must end at end of filename (before extension)
 ID_PATTERN = re.compile(r'_0[xX]([0-9A-Fa-f]+)$')
+
+
+# ============================================================================
+# Numba-Optimized ZipCrypto Implementation
+# ============================================================================
+
+if NUMBA_AVAILABLE:
+    # Generate CRC32 table for polynomial 0xEDB88320 (IEEE 802.3)
+    # This table is used by ZipCrypto for key initialization and updates
+    _crc32_table_list = []
+    for i in range(256):
+        crc = np.uint32(i)
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ 0xEDB88320
+            else:
+                crc >>= 1
+        _crc32_table_list.append(crc)
+    _CRC32_TABLE = np.array(_crc32_table_list, dtype=np.uint32)
+
+    @jit(nopython=True, cache=True)
+    def _zipcrypto_init_keys(password_bytes):
+        """
+        Initialize ZipCrypto keys from password bytes.
+        
+        Args:
+            password_bytes: uint8 array of password bytes
+            
+        Returns:
+            uint32 array of [key0, key1, key2]
+        """
+        k0 = np.uint32(0x12345678)
+        k1 = np.uint32(0x23456789)
+        k2 = np.uint32(0x34567890)
+        
+        for i in range(len(password_bytes)):
+            byte = password_bytes[i]
+            # Update k0 using CRC32
+            idx0 = (k0 ^ byte) & 0xFF
+            k0 = (k0 >> 8) ^ _CRC32_TABLE[idx0]
+            # Update k1
+            low_k0 = k0 & 0xFF
+            k1 = (k1 + low_k0) & 0xFFFFFFFF
+            k1 = (k1 * 134775813) & 0xFFFFFFFF
+            k1 = (k1 + 1) & 0xFFFFFFFF
+            # Update k2 using CRC32
+            idx2 = (k2 ^ (k1 >> 24)) & 0xFF
+            k2 = (k2 >> 8) ^ _CRC32_TABLE[idx2]
+        
+        return np.array([k0, k1, k2], dtype=np.uint32)
+
+    @jit(nopython=True, cache=True)
+    def _zipcrypto_process_chunk(data, keys):
+        """
+        Encrypt a data chunk using ZipCrypto stream cipher.
+        
+        Args:
+            data: uint8 array of plaintext data
+            keys: uint32 array of [key0, key1, key2]
+            
+        Returns:
+            Tuple of (encrypted_data, updated_keys)
+        """
+        k0, k1, k2 = keys[0], keys[1], keys[2]
+        n = len(data)
+        ciphertext = np.empty(n, dtype=np.uint8)
+        
+        for i in range(n):
+            byte = data[i]  # This is the PLAINTEXT byte
+            
+            # Generate keystream byte
+            temp = (k2 | 2) & 0xFFFFFFFF
+            keystream = (((temp * (temp ^ 1)) & 0xFFFFFFFF) >> 8) & 0xFF
+            
+            # Encrypt byte
+            cipher_byte = byte ^ keystream
+            ciphertext[i] = cipher_byte
+            
+            # Update keys
+            # FIXED: Use 'byte' (plaintext), not 'cipher_byte'
+            # k0 = crc32(k0, plaintext_byte)
+            idx0 = (k0 ^ byte) & 0xFF
+            k0 = (k0 >> 8) ^ _CRC32_TABLE[idx0]
+            
+            # k1 = (k1 + (k0 & 0xFF)) * 134775813 + 1
+            low_k0 = k0 & 0xFF
+            k1 = (k1 + low_k0) & 0xFFFFFFFF
+            k1 = (k1 * 134775813) & 0xFFFFFFFF
+            k1 = (k1 + 1) & 0xFFFFFFFF
+            
+            # k2 = crc32(k2, k1 >> 24)
+            idx2 = (k2 ^ (k1 >> 24)) & 0xFF
+            k2 = (k2 >> 8) ^ _CRC32_TABLE[idx2]
+        
+        return ciphertext, np.array([k0, k1, k2], dtype=np.uint32)
+
+    class NumbaZipFile:
+        """
+        High-performance ZipCrypto-enabled ZIP file writer using Numba-optimized encryption.
+        Provides minimal API compatible with zipencrypt.ZipFile for writestr() and write() methods.
+        """
+        
+        def __init__(self, fileobj, mode='w', compression=ZIP_DEFLATED):
+            """
+            Initialize ZIP file writer.
+            
+            Args:
+                fileobj: File-like object (e.g., BytesIO) to write ZIP data to
+                mode: Must be 'w' for writing
+                compression: Compression method (ZIP_DEFLATED or ZIP_STORED)
+            """
+            if mode != 'w':
+                raise ValueError("Only 'w' mode is supported")
+            
+            self.fileobj = fileobj
+            self.compression = compression
+            self.entries = []  # List of (name, crc, size_uncompressed, size_compressed, offset, flags)
+            self.offset = 0
+            self.closed = False
+        
+        def __enter__(self):
+            return self
+        
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.close()
+            return False
+        
+        def close(self):
+            """Write Central Directory and End of Central Directory records, then close."""
+            if self.closed:
+                return
+            
+            # Write Central Directory
+            cd_offset = self.offset
+            for name, crc, size_uncomp, size_comp, offset, flags in self.entries:
+                self._write_central_directory_entry(name, crc, size_uncomp, size_comp, offset, flags)
+            
+            cd_size = self.offset - cd_offset
+            
+            # Write End of Central Directory
+            self._write_end_of_central_directory(len(self.entries), cd_size, cd_offset)
+            
+            self.closed = True
+        
+        def writestr(self, filename, data, pwd=None):
+            """
+            Write string/bytes data to ZIP archive with optional ZipCrypto encryption.
+            
+            Args:
+                filename: Name of file in archive
+                data: String or bytes data to write
+                pwd: Password bytes for encryption (None = no encryption)
+            """
+            if isinstance(data, str):
+                data = data.encode('utf-8')
+            
+            # Calculate CRC32
+            crc = zlib.crc32(data) & 0xFFFFFFFF
+            
+            # Compress data if needed
+            if self.compression == ZIP_DEFLATED:
+                compressor = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
+                compressed_data = compressor.compress(data) + compressor.flush()
+            else:
+                compressed_data = data
+            
+            # Encrypt if password provided
+            flags = 0
+            if pwd is not None:
+                flags |= 0x1  # Set encryption flag
+                compressed_data = self._encrypt_data(compressed_data, pwd, crc)
+            
+            # Write Local File Header
+            lfh_offset = self.offset
+            self._write_local_file_header(filename, len(compressed_data), len(data), crc, flags)
+            
+            # Write file data
+            self.fileobj.write(compressed_data)
+            self.offset += len(compressed_data)
+            
+            # Record entry for Central Directory
+            self.entries.append((filename, crc, len(data), len(compressed_data), lfh_offset, flags))
+        
+        def write(self, filepath, arcname=None, pwd=None):
+            """
+            Write file from disk to ZIP archive with optional ZipCrypto encryption.
+            
+            Args:
+                filepath: Path to file on disk (Path or str)
+                arcname: Name of file in archive (defaults to filepath.name)
+                pwd: Password bytes for encryption (None = no encryption)
+            """
+            filepath = Path(filepath)
+            if arcname is None:
+                arcname = filepath.name
+            
+            # Read file data
+            with open(filepath, 'rb') as f:
+                data = f.read()
+            
+            # Use writestr to handle the rest
+            self.writestr(arcname, data, pwd)
+        
+        def _encrypt_data(self, data, password, crc):
+            """
+            Encrypt data using ZipCrypto algorithm.
+            
+            Args:
+                data: Bytes to encrypt
+                password: Password bytes
+                crc: CRC32 of uncompressed data
+                
+            Returns:
+                Encrypted bytes (12-byte header + encrypted body)
+            """
+            # Initialize keys from password
+            pwd_array = np.frombuffer(password, dtype=np.uint8)
+            keys = _zipcrypto_init_keys(pwd_array)
+            
+            # Generate 12-byte encryption header
+            # First 11 bytes are random, last byte is CRC check byte
+            header_nonce = os.urandom(11)
+            check_byte = (crc >> 24) & 0xFF
+            header = header_nonce + bytes([check_byte])
+            
+            # Encrypt header (this updates the keys)
+            header_array = np.frombuffer(header, dtype=np.uint8)
+            enc_header, keys = _zipcrypto_process_chunk(header_array, keys)
+            
+            # Encrypt body in chunks for better performance
+            chunk_size = 256 * 1024  # 256KB chunks
+            encrypted_chunks = []
+            
+            data_array = np.frombuffer(data, dtype=np.uint8)
+            for i in range(0, len(data_array), chunk_size):
+                chunk = data_array[i:i + chunk_size]
+                enc_chunk, keys = _zipcrypto_process_chunk(chunk, keys)
+                encrypted_chunks.append(enc_chunk.tobytes())
+            
+            # Combine header and body
+            return enc_header.tobytes() + b''.join(encrypted_chunks)
+        
+        def _write_local_file_header(self, filename, compressed_size, uncompressed_size, crc, flags):
+            """Write Local File Header (LFH) record."""
+            filename_bytes = filename.encode('utf-8')
+            filename_len = len(filename_bytes)
+            
+            # Local File Header structure (30 bytes + filename)
+            # Signature (I), version (H), flags (H), compression (H), mod time (H), mod date (H),
+            # CRC-32 (I), compressed size (I), uncompressed size (I), filename len (H), extra len (H)
+            header = struct.pack('<IHHHHHIIIHH',
+                0x04034b50,  # Local file header signature (4 bytes)
+                20,          # Version needed to extract (2.0)
+                flags,       # General purpose bit flag
+                8 if self.compression == ZIP_DEFLATED else 0,  # Compression method
+                0,           # Last mod file time
+                0,           # Last mod file date
+                crc,         # CRC-32
+                compressed_size,    # Compressed size
+                uncompressed_size,  # Uncompressed size
+                filename_len,       # Filename length
+                0            # Extra field length
+            )
+            
+            self.fileobj.write(header)
+            self.fileobj.write(filename_bytes)
+            self.offset += 30 + filename_len
+        
+        def _write_central_directory_entry(self, filename, crc, uncompressed_size, compressed_size, offset, flags):
+            """Write Central Directory File Header."""
+            filename_bytes = filename.encode('utf-8')
+            filename_len = len(filename_bytes)
+            
+            # Central Directory File Header structure (46 bytes + filename)
+            # Signature (I), version made by (H), version needed (H), flags (H), compression (H),
+            # mod time (H), mod date (H), CRC-32 (I), compressed size (I), uncompressed size (I),
+            # filename len (H), extra len (H), comment len (H), disk num (H), internal attr (H),
+            # external attr (I), offset (I)
+            header = struct.pack('<IHHHHHHIIIHHHHHII',
+                0x02014b50,  # Central file header signature (4 bytes)
+                20,          # Version made by
+                20,          # Version needed to extract
+                flags,       # General purpose bit flag
+                8 if self.compression == ZIP_DEFLATED else 0,  # Compression method
+                0,           # Last mod file time
+                0,           # Last mod file date
+                crc,         # CRC-32
+                compressed_size,    # Compressed size
+                uncompressed_size,  # Uncompressed size
+                filename_len,       # Filename length
+                0,           # Extra field length
+                0,           # File comment length
+                0,           # Disk number start
+                0,           # Internal file attributes
+                0,           # External file attributes (4 bytes)
+                offset       # Relative offset of local header
+            )
+            
+            self.fileobj.write(header)
+            self.fileobj.write(filename_bytes)
+            self.offset += 46 + filename_len
+        
+        def _write_end_of_central_directory(self, num_entries, cd_size, cd_offset):
+            """Write End of Central Directory Record."""
+            # Signature (I), disk num (H), disk with CD (H), entries on disk (H), total entries (H),
+            # CD size (I), CD offset (I), comment length (H)
+            eocd = struct.pack('<IHHHHIIH',
+                0x06054b50,  # End of central dir signature (4 bytes)
+                0,           # Number of this disk
+                0,           # Number of disk with start of central directory
+                num_entries, # Total number of entries in central directory on this disk
+                num_entries, # Total number of entries in central directory
+                cd_size,     # Size of central directory
+                cd_offset,   # Offset of start of central directory
+                0            # ZIP file comment length
+            )
+            
+            self.fileobj.write(eocd)
+            self.offset += 22
+    
+    # Set ZipFile to use NumbaZipFile (we're already inside NUMBA_AVAILABLE block)
+    ZipFile = NumbaZipFile
 
 
 # ============================================================================
@@ -1837,7 +2180,20 @@ def _classify_and_compress_textures(valid_dict: Dict[str, Path], texture_dir: Pa
     # Display classifications with status
     display_texture_classification(valid_dict, classifications, status_dict)
 
-    enable_compression = prompt_auto_compress()
+    # Get compression setting from config (defaults to True)
+    enable_compression = ENABLE_COMPRESSION
+    
+    # Check ImageMagick availability if compression is enabled
+    if enable_compression and not check_imagemagick():
+        print(f"\n{Fore.YELLOW}[Warning] ImageMagick is not available.{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}DDS compression requires ImageMagick to be installed.{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}To install ImageMagick:{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}  1. Download from: https://imagemagick.org/script/download.php{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}  2. Install ImageMagick on your system{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}  3. Make sure 'magick' command is in your system PATH{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Proceeding without DDS compression...{Style.RESET_ALL}")
+        enable_compression = False
+    
     original_file_size = calculate_total_file_size(valid_dict)
 
     dds_cleanup_list = []

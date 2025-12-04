@@ -2,5 +2,6 @@ Pillow>=8.0.0
 numpy>=1.20.0
 zipencrypt>=0.1.0
 colorama>=0.4.0
+numba>=0.56.0  # Optional but recommended for faster ZipCrypto encryption (script falls back to zipencrypt if not installed)
 
 
