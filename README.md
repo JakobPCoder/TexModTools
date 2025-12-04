@@ -1,10 +1,14 @@
 # TexModTools
 
-A collection of Python scripts and tools for creating texture mods for DirectX 9 games using OpenTexMod.
+A collection of Python scripts and tools for creating texture mods and TPF files for DirectX 9 games using OpenTexMod.
 
 ## About
 
-TexModTools provides a complete workflow for extracting, processing, and packaging game textures. The tools support the modern OpenTexMod implementation, allowing you to create texture replacement mods for classic DirectX 9 games.
+TexModTools provides a complete workflow for processing and packaging game textures into TPF files. The tools are based on the usage of OpenTexMod, allowing you to create texture replacement mods for classic DirectX 9 games.
+This script is faster than the original TexMod and creates files that should be compatible with both TexMod and OpenTexMod.
+
+We also include OpenTexMod files, because no reliable maintained download source was found.
+Our license does not apply to the OpenTexMod files.
 
 ## Copyright Notice
 
@@ -225,6 +229,9 @@ If `TexturesToTpf.py` fails during DDS compression with 'magick' errors:
 **Note:** The `TexturesToTpf.py` script includes comprehensive validation and will automatically detect most issues. However, these troubleshooting steps address edge cases like file permission problems or external factors that the script cannot control.
 
 ## Updates
+
+### Version 0.6
+- **XOR Performance Optimization:** Implemented custom high-performance XOR obfuscation for significantly faster TPF file creation
 
 ### Version 0.5
 - **Performance Enhancement:** Added Numba-optimized ZipCrypto implementation for significantly faster TPF file creation
