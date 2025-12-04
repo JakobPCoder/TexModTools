@@ -50,6 +50,38 @@ pip install -r requirements.txt
 
 **Note:** For the optional DDS compression feature in `TexturesToTpf.py`, ImageMagick must be installed separately on your system (download from [ImageMagick's official website](https://imagemagick.org/script/download.php)) and the `magick` command must be in your system PATH.
 
+## Configuration
+
+TexModTools uses a `config.ini` file for customizable settings. The config file is automatically created with default values if it doesn't exist.
+
+### Config File Location
+Place `config.ini` in the same directory as `TexturesToTpf.py` to customize behavior.
+
+### Config Settings
+
+#### [FileFormats]
+- `input_formats` - Comma-separated list of supported image formats (default: png,jpg,jpeg,bmp)
+
+#### [DDS]
+- `generate_mipmaps` - Generate mipmaps for DDS textures (default: True)
+- `channel_variance_threshold` - Threshold for detecting color channel variance (default: 0.001)
+- `normal_variance_threshold` - Threshold for detecting normal map variance (default: 0.01)
+- `enable_compression` - Enable automatic DDS compression (default: True)
+
+### Example config.ini
+```ini
+[FileFormats]
+input_formats = png,jpg,jpeg,bmp
+
+[DDS]
+generate_mipmaps = True
+channel_variance_threshold = 0.001
+normal_variance_threshold = 0.01
+enable_compression = True
+```
+
+**Note:** When `enable_compression = True`, the script will automatically compress PNG textures to DDS format during TPF creation. Set to `False` to skip compression and use PNG files directly.
+
 ## Scripts Overview
 
 ### 1. `1toPng.py` - DDS to PNG Converter
@@ -91,7 +123,6 @@ Automatically scans a directory for PNG texture files, extracts hexadecimal IDs 
 2. Run: `python TexturesToTpf.py` or double-click `Run_TexturesToTpf.bat`
 3. The script will:
    - Auto-detect the texture directory (or prompt for selection)
-   - **Prompt: Ask if you want to auto-compress textures to DDS format (y/n) for smaller file sizes**
    - Scan for valid texture files matching the ID pattern
    - Validate all files exist
    - Generate `texmod.def` definition file
@@ -145,10 +176,10 @@ If you need to edit alpha channels separately:
 
 ### Step 5: Create TPF Package
 1. Ensure all textures follow the `*_0X[hex].png` naming pattern
-2. Place `TexturesToTpf.py` in the texture folder (or run from anywhere)
-3. Run: `python TexturesToTpf.py` or double-click `Run_TexturesToTpf.bat`
-4. **The script will prompt: Do you want to auto-compress to DDS? (y/n)**
-5. The script creates a `.tpf` file ready for use
+2. Configure compression settings in `config.ini` (optional - defaults to enabled)
+3. Place `TexturesToTpf.py` in the texture folder (or run from anywhere)
+4. Run: `python TexturesToTpf.py` or double-click `Run_TexturesToTpf.bat`
+5. The script creates a `.tpf` file ready for use (automatically compresses to DDS if enabled in config)
 
 ### Step 6: Use Your Mod
 1. Launch **OpenTexMod.exe**

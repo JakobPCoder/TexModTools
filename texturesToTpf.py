@@ -1540,6 +1540,12 @@ def compress_textures_to_dds(texture_dict: Dict[str, Path], classifications: Dic
                         if dds_path.exists():
                             updated_dict[hash_str] = dds_path
                             skipped_count += 1
+                            # Count the compression format from cache
+                            compression_type = cache_entry.get('compression_type', '')
+                            if compression_type == 'DXT5':
+                                dxt5_count += 1
+                            elif compression_type == 'DXT1':
+                                dxt1_count += 1
                             continue
                 except (ValueError, KeyError):
                     pass
@@ -1905,34 +1911,93 @@ def create_zip_archive(texture_dict: Dict[str, Path], texmod_def: str, password:
 
 def apply_xor_obfuscation(encrypted_bytes: bytes, xor_key: int = XOR_KEY) -> bytes:
     """
-    Apply XOR obfuscation to encrypted ZIP bytes.
+    Apply XOR obfuscation to encrypted ZIP bytes using NumPy vectorization.
     
     XOR key: 0x3FA43FA4 = [0xA4, 0x3F, 0xA4, 0x3F] (little-endian)
-    Process in 4-byte chunks, handling remainder bytes cyclically.
+    Process in chunks with progress tracking for large files.
     
     Args:
         encrypted_bytes: Encrypted ZIP archive bytes
         xor_key: XOR key (default: 0x3FA43FA4)
         
     Returns:
-        XOR-obfuscated bytes
+        XOR-obfuscated bytes (byte-for-byte identical to original implementation)
     """
     print(f"{Fore.YELLOW}[Obfuscating] Applying XOR mask 0x{XOR_KEY:08X}...{Style.RESET_ALL}")
     
     # Convert key to bytes (little-endian)
     key_bytes = struct.pack('<I', xor_key)  # [0xA4, 0x3F, 0xA4, 0x3F]
     
-    # Convert to bytearray for mutation
-    result = bytearray(encrypted_bytes)
+    data_length = len(encrypted_bytes)
     
-    # Process in 4-byte chunks
-    for i in range(0, len(result), 4):
-        chunk_size = min(4, len(result) - i)
-        for j in range(chunk_size):
-            result[i + j] ^= key_bytes[j]
+    # For small files, process directly without progress bar
+    if data_length < 1024 * 1024:  # Less than 1MB
+        # Convert to numpy array
+        data_array = np.frombuffer(encrypted_bytes, dtype=np.uint8)
+        
+        # Create repeating key pattern: [0xA4, 0x3F, 0xA4, 0x3F, ...]
+        key_pattern = np.tile(np.frombuffer(key_bytes, dtype=np.uint8), (data_length + 3) // 4)[:data_length]
+        
+        # Vectorized XOR operation
+        result_array = data_array ^ key_pattern
+        
+        # Convert back to bytes
+        result = result_array.tobytes()
+        
+        print(f"{Fore.GREEN}XOR obfuscation complete.{Style.RESET_ALL}")
+        return result
+    
+    # For larger files, process in chunks with progress bar
+    chunk_size = 256 * 1024  # 256KB chunks for progress updates
+    result_chunks = []
+    
+    # Convert key bytes to numpy array for repeating pattern
+    key_array = np.frombuffer(key_bytes, dtype=np.uint8)
+    
+    total_chunks = (data_length + chunk_size - 1) // chunk_size
+    
+    for chunk_idx in range(total_chunks):
+        start_pos = chunk_idx * chunk_size
+        end_pos = min(start_pos + chunk_size, data_length)
+        chunk_length = end_pos - start_pos
+        
+        # Extract chunk
+        chunk_data = encrypted_bytes[start_pos:end_pos]
+        chunk_array = np.frombuffer(chunk_data, dtype=np.uint8)
+        
+        # Create repeating key pattern for this chunk
+        # Calculate offset within the 4-byte pattern
+        pattern_offset = start_pos % 4
+        # Create enough pattern bytes for this chunk
+        pattern_length = chunk_length + 4  # Extra to handle offset
+        key_pattern = np.tile(key_array, (pattern_length + 3) // 4)[pattern_offset:pattern_offset + chunk_length]
+        
+        # Vectorized XOR operation
+        result_chunk = chunk_array ^ key_pattern
+        result_chunks.append(result_chunk.tobytes())
+        
+        # Show progress
+        percentage = int(((chunk_idx + 1) / total_chunks) * 100) if total_chunks > 0 else 0
+        bar_length = 30
+        filled = int(bar_length * (chunk_idx + 1) / total_chunks) if total_chunks > 0 else 0
+        bar = '█' * filled + '░' * (bar_length - filled)
+        
+        size_mb = data_length / (1024 * 1024)
+        progress_text = (
+            f"\r{Fore.CYAN}[Obfuscating]{Style.RESET_ALL} "
+            f"{Fore.CYAN}{bar}{Style.RESET_ALL} {percentage}% | "
+            f"{Fore.CYAN}{size_mb:.2f} MB{Style.RESET_ALL}"
+        )
+        print(progress_text, end='', flush=True)
+    
+    # Clear progress line
+    print('\r' + ' ' * 100 + '\r', end='', flush=True)
+    
+    # Combine all chunks
+    result = b''.join(result_chunks)
     
     print(f"{Fore.GREEN}XOR obfuscation complete.{Style.RESET_ALL}")
-    return bytes(result)
+    return result
 
 
 def write_tpf_file(tpf_bytes: bytes, output_path: Path) -> None:
