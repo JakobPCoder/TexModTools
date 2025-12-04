@@ -45,7 +45,7 @@ pip install -r requirements.txt
 - `Pillow` - Image processing for alpha channel detection
 - `numpy` - Numerical operations for alpha variance calculation
 - `zipencrypt` - ZipCrypto encryption library (fallback for TPF format encryption)
-- `numba` - **Recommended** - High-performance JIT compiler for optimized ZipCrypto encryption (significantly faster than zipencrypt fallback)
+- `numba` - **Recommended** - High-performance JIT compiler for optimized ZipCrypto encryption and custom ZIP file operations (significantly faster than native Python implementations)
 - `colorama` - Colored terminal output (optional, falls back gracefully if not installed)
 
 **Zip Encryption Performance:**
@@ -151,9 +151,10 @@ Textures must follow the pattern: `*_0X[hexadecimal].ext` or `*_0x[hexadecimal].
 - Progress indicators for large texture sets (>10 files)
 - Validation of texture files before packaging
 - Duplicate ID detection and warnings
-- Full TPF format compliance (XOR obfuscation + ZipCrypto encryption)
+- Full TPF format compliance (**high-performance NumPy vectorized XOR obfuscation** + **Numba-optimized ZipCrypto encryption**)
 - Detailed build summary with file size comparisons (PNG vs. DDS vs. TPF)
 - Automatic cleanup of temporary DDS files
+- **Compression cache: Stores converted DDS textures in a `compressed/` subdirectory with `cache.json` to track file hashes and avoid recompressing unchanged textures**
 - Fallback to original PNG if compression fails
 
 ## Complete Workflow
